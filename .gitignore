@@ -1,0 +1,16 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Optional Electron
+dist-electron/
+
+# Miscellaneous
+.DS_Store
