@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 
 const authRoutes = require('./routes/authRoutes');
+const setupRoutes = require('./routes/setupRoutes');
 const errorHandler = require('./middleware/error');
 
 const app = express();
@@ -35,6 +36,7 @@ app.get('/', (req, res) => {
 });
 
 app.use('/api/auth', authRoutes);
+app.use('/api/setup', setupRoutes);
 app.use(errorHandler);
 
 
