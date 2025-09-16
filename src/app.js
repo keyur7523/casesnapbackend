@@ -12,7 +12,23 @@ const app = express();
 const PORT = process.env.PORT || 5004;
 
 app.use(express.json()); 
-app.use(cors()); 
+
+// CORS configuration for frontend
+const corsOptions = {
+    origin: [
+        'http://localhost:3000',  // Next.js development server
+        'http://127.0.0.1:3000',  // Alternative localhost
+        'http://localhost:3001',  // Alternative port
+        // Add your production frontend URL here when deployed
+        // 'https://your-frontend-domain.com'
+    ],
+    credentials: true,  // Allow cookies and authorization headers
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    optionsSuccessStatus: 200 // For legacy browser support
+};
+
+app.use(cors(corsOptions)); 
 
 const connectDB = async () => {
     try {
