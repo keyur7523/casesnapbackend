@@ -18,9 +18,8 @@ const corsOptions = {
     origin: [
         'http://localhost:3000',  // Next.js development server
         'http://127.0.0.1:3000',  // Alternative localhost
-        'http://localhost:3001',  // Alternative port
-        // Add your production frontend URL here when deployed
-        // 'https://your-frontend-domain.com'
+        'http://localhost:3001', 
+        'https://casesnap-nvewn0k03-jui1234s-projects.vercel.app/'       
     ],
     credentials: true,  // Allow cookies and authorization headers
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
