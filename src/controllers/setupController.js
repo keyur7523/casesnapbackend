@@ -35,7 +35,7 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     });
     if (existingAdminWithEmail) {
         console.log('❌ Admin user with this email already exists');
-        return next(new ErrorResponse('An admin user with this email already exists.', 400));
+        return next(new ErrorResponse('This email address is already registered as an admin user. Please use a different email address.', 400));
     }
     console.log('✅ Email is available for admin user');
 
@@ -46,7 +46,7 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     });
     if (existingOrgWithName) {
         console.log('❌ Organization with this name already exists');
-        return next(new ErrorResponse('An organization with this name already exists.', 400));
+        return next(new ErrorResponse('An organization with this name already exists. Please choose a different company name.', 400));
     }
     console.log('✅ Organization name is available');
 
@@ -60,7 +60,7 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     // You might want more specific checks here that mirror frontend validateOrganizationData
     // and validateSuperAdminData before Mongoose schema validation.
     if (adminData.password !== adminData.confirmPassword) {
-        return next(new ErrorResponse('Passwords do not match.', 400));
+        return next(new ErrorResponse('Password and confirm password do not match. Please make sure both passwords are identical.', 400));
     }
     // Note: Mongoose will handle the rest of the validation (required, unique, email format, etc.)
 

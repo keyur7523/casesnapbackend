@@ -6,7 +6,9 @@ const cors = require('cors');
 
 const authRoutes = require('./routes/authRoutes');
 const setupRoutes = require('./routes/setupRoutes');
+const employeeRoutes = require('./routes/employeeRoutes');
 const errorHandler = require('./middleware/error');
+const { initializeEmailService } = require('./utils/emailService');
 
 const app = express();
 const PORT = process.env.PORT || 5004;
@@ -88,12 +90,16 @@ const connectDB = async () => {
 // Connect to the database
 connectDB();
 
+// Initialize email service
+initializeEmailService();
+
 app.get('/', (req, res) => {
     res.send('API is running...');
 });
 
 app.use('/api/auth', authRoutes);
 app.use('/api/setup', setupRoutes);
+app.use('/api/employees', employeeRoutes);
 app.use(errorHandler);
 
 
