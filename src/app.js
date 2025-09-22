@@ -23,16 +23,26 @@ app.use((req, res, next) => {
 });
 
 // CORS configuration for frontend
+const allowedOrigins = [
+    'http://localhost:3000',  // Next.js development server
+    'http://127.0.0.1:3000',  // Alternative localhost
+    'http://localhost:3001',  // Alternative port
+    'http://localhost:3002',  // Alternative port
+    'http://localhost:3003',  // Alternative port
+    'https://casesnap-nvewn0k03-jui1234s-projects.vercel.app',  // Old Vercel URL
+    'https://casesnap-nvewn0k03-jui1234s-projects.vercel.app/',  // Old Vercel URL with slash
+    'https://casesnap-lake.vercel.app',  // New Vercel URL
+    'https://casesnap-lake.vercel.app/'  // New Vercel URL with slash
+];
+
+// Add environment variable origins if they exist
+if (process.env.ALLOWED_ORIGINS) {
+    const envOrigins = process.env.ALLOWED_ORIGINS.split(',');
+    allowedOrigins.push(...envOrigins);
+}
+
 const corsOptions = {
-    origin: [
-        'http://localhost:3000',  // Next.js development server
-        'http://127.0.0.1:3000',  // Alternative localhost
-        'http://localhost:3001',  // Alternative port
-        'http://localhost:3002',  // Alternative port
-        'http://localhost:3003',  // Alternative port
-        'https://casesnap-nvewn0k03-jui1234s-projects.vercel.app',  // Removed trailing slash
-        'https://casesnap-nvewn0k03-jui1234s-projects.vercel.app/'  // With trailing slash
-    ],
+    origin: allowedOrigins,
     credentials: true,  // Allow cookies and authorization headers
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
@@ -55,7 +65,8 @@ app.use((req, res, next) => {
     console.log('🌐 CORS Debug:', {
         origin: req.headers.origin,
         method: req.method,
-        headers: req.headers
+        allowedOrigins: allowedOrigins,
+        isOriginAllowed: allowedOrigins.includes(req.headers.origin)
     });
     next();
 }); 
