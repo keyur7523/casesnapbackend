@@ -76,22 +76,24 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
         console.log('✅ Created new employee invitation');
     }
 
-    // Generate invitation link
-    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employee/register?token=${invitationToken}`;
+    // Generate invitation link with all required data
+    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&employeeEmail=${encodeURIComponent(email)}`;
     
     console.log('🔗 Invitation link generated:', invitationLink);
 
-    // Send email with invitation link
+    // Send email with invitation link using SMTP
     const emailResult = await sendEmployeeInvitation({
         to: email,
         firstName,
         lastName,
         organizationName: organization.companyName,
+        companyEmail: organization.companyEmail,
+        adminName: `${req.user.firstName} ${req.user.lastName}`,
         invitationLink
     });
 
     if (emailResult.success) {
-        console.log('✅ Email sent successfully');
+        console.log('✅ Email sent successfully via SMTP');
     } else {
         console.log('⚠️ Email sending failed:', emailResult.message || emailResult.error);
     }
@@ -113,7 +115,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     });
 });
 
-// @desc      Get employee by invitation token
+// @desc      Get employee by invitation tokenp
 // @route     GET /api/employees/register/:token
 // @access    Public
 exports.getEmployeeByToken = asyncHandler(async (req, res, next) => {
@@ -169,9 +171,9 @@ exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
     console.log('🔑 Token:', token);
     console.log('📋 Registration data:', { phone, address, gender, dateOfBirth });
 
-    // Validate required fields
+    // Validate required fields for completion
     if (!phone || !address || !gender || !dateOfBirth) {
-        return next(new ErrorResponse('Phone, address, gender, and date of birth are required', 400));
+        return next(new ErrorResponse('Phone, address, gender, and date of birth are required to complete registration', 400));
     }
 
     // Find employee by token

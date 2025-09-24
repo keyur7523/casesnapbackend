@@ -30,12 +30,12 @@ const EmployeeSchema = new mongoose.Schema({
     // Contact Information
     phone: {
         type: String,
-        required: [true, 'Please add a phone number'],
+        required: false, // Only required when completing registration
         match: [/^\d{10}$/, 'Phone number must be a 10-digit number']
     },
     address: {
         type: String,
-        required: [true, 'Please add an address'],
+        required: false, // Only required when completing registration
         trim: true,
         maxlength: [200, 'Address cannot be more than 200 characters']
     },
@@ -43,12 +43,12 @@ const EmployeeSchema = new mongoose.Schema({
     // Personal Information
     gender: {
         type: String,
-        required: [true, 'Please select gender'],
+        required: false, // Only required when completing registration
         enum: ['Male', 'Female', 'Other', 'Prefer not to say']
     },
     dateOfBirth: {
         type: Date,
-        required: [true, 'Please add date of birth']
+        required: false // Only required when completing registration
     },
     
     // Organization Reference

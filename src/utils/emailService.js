@@ -27,7 +27,7 @@ const initializeEmailService = () => {
 
 // Send employee invitation email
 const sendEmployeeInvitation = async (emailData) => {
-    const { to, firstName, lastName, organizationName, invitationLink } = emailData;
+    const { to, firstName, lastName, organizationName, companyEmail, adminName, invitationLink } = emailData;
 
     if (!transporter) {
         console.log('⚠️ Email service not initialized, logging invitation details instead');
@@ -41,59 +41,68 @@ const sendEmployeeInvitation = async (emailData) => {
         to: to,
         subject: `Invitation to join ${organizationName}`,
         html: `
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Employee Invitation</title>
-                <style>
-                    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                    .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                    .header { background-color: #f8f9fa; padding: 20px; text-align: center; border-radius: 8px; }
-                    .content { padding: 20px; }
-                    .button { 
-                        display: inline-block; 
-                        background-color: #007bff; 
-                        color: white; 
-                        padding: 12px 24px; 
-                        text-decoration: none; 
-                        border-radius: 5px; 
-                        margin: 20px 0;
-                    }
-                    .footer { background-color: #f8f9fa; padding: 15px; text-align: center; font-size: 12px; color: #666; }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>Welcome to ${organizationName}</h1>
-                    </div>
-                    <div class="content">
-                        <h2>Hello ${firstName} ${lastName}!</h2>
-                        <p>You have been invited to join <strong>${organizationName}</strong> as an employee.</p>
-                        <p>To complete your registration and set up your account, please click the button below:</p>
-                        <p style="text-align: center;">
-                            <a href="${invitationLink}" class="button">Complete Registration</a>
-                        </p>
-                        <p><strong>Important:</strong></p>
-                        <ul>
-                            <li>This invitation link will expire in 7 days</li>
-                            <li>You will need to provide your contact details and personal information</li>
-                            <li>If you have any questions, please contact your organization administrator</li>
-                        </ul>
-                        <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
-                        <p style="word-break: break-all; background-color: #f8f9fa; padding: 10px; border-radius: 4px;">
-                            ${invitationLink}
-                        </p>
-                    </div>
-                    <div class="footer">
-                        <p>This is an automated message. Please do not reply to this email.</p>
-                        <p>&copy; ${new Date().getFullYear()} ${organizationName}. All rights reserved.</p>
-                    </div>
-                </div>
-            </body>
-            </html>
+            <div style="font-family: system-ui, sans-serif, Arial; font-size: 16px; background-color: #f8fafc; color: #0f172a">
+              <div style="max-width: 600px; margin: auto; padding: 16px; background-color: #ffffff; border-radius: 8px;">
+                
+                <a style="text-decoration: none; outline: none" href="${process.env.FRONTEND_URL || 'http://localhost:3000'}" target="_blank">
+                  <img
+                    style="height: 32px; vertical-align: middle"
+                    height="32px"
+                    src="cid:logo.png"
+                    alt="${organizationName} Logo"
+                  />
+                </a>
+
+                <p style="color: #0f172a; font-weight: 500;">Dear <strong>${firstName} ${lastName}</strong>,</p>
+
+                <p style="color: #475569;">
+                  Welcome to <strong>${organizationName}</strong>! We are thrilled to have you join our team.
+                </p>
+
+                <p style="color: #475569;">
+                  <strong>${adminName}</strong> has invited you to complete your employee profile.  
+                  Please click the link below to provide your information and set up your account:
+                </p>
+
+                <p>
+                  <a
+                    style="
+                      display: inline-block;
+                      text-decoration: none;
+                      outline: none;
+                      color: #ffffff;
+                      background-color: #facc15;
+                      padding: 10px 18px;
+                      border-radius: 6px;
+                      font-weight: 500;
+                    "
+                    href="${invitationLink}"
+                    target="_blank"
+                  >
+                    Complete Your Profile
+                  </a>
+                </p>
+
+                <p style="color: #64748b;">
+                  This link is unique to you and should be used to submit your personal and employment details securely.
+                </p>
+
+                <p style="color: #475569;">
+                  If you have any questions or need help, feel free to contact <strong>${adminName}</strong> at  
+                  <a href="mailto:${companyEmail}" style="text-decoration: none; outline: none; color: #facc15"
+                    >${companyEmail}</a
+                  >.
+                </p>
+
+                <p style="color: #475569;">
+                  We look forward to welcoming you to the team and helping you get started smoothly!
+                </p>
+
+                <p style="color: #0f172a;">
+                  Best regards,<br />The <strong>${organizationName}</strong> Team
+                </p>
+              </div>
+            </div>
         `,
         text: `
             Hello ${firstName} ${lastName}!

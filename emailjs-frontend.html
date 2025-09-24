@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EmailJS Frontend Service</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #333;
+        }
+        input[type="text"], input[type="email"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .message {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .config-section {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Employee Invitation with EmailJS</h2>
+        
+        <div class="config-section">
+            <h3>Configuration</h3>
+            <p><strong>Backend URL:</strong> <span id="backendUrl">http://localhost:5004</span></p>
+            <p><strong>EmailJS Service ID:</strong> <span id="serviceId">service_erm300c</span></p>
+            <p><strong>EmailJS Template ID:</strong> <span id="templateId">template_wn4dbsz</span></p>
+            <p><strong>EmailJS Public Key:</strong> <span id="publicKey">Not Set</span></p>
+        </div>
+        
+        <form id="invitationForm">
+            <div class="form-group">
+                <label for="firstName">First Name:</label>
+                <input type="text" id="firstName" name="firstName" required>
+            </div>
+
+            <div class="form-group">
+                <label for="lastName">Last Name:</label>
+                <input type="text" id="lastName" name="lastName" required>
+            </div>
+
+            <div class="form-group">
+                <label for="email">Email:</label>
+                <input type="email" id="email" name="email" required>
+            </div>
+
+            <button type="submit" id="submitBtn">Send Invitation</button>
+        </form>
+
+        <div id="message"></div>
+    </div>
+
+    <!-- EmailJS SDK -->
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+    
+    <script>
+        // Configuration - Update these values
+        const CONFIG = {
+            BACKEND_URL: 'http://localhost:5004',
+            EMAILJS_SERVICE_ID: 'service_erm300c',
+            EMAILJS_TEMPLATE_ID: 'template_wn4dbsz',
+            EMAILJS_PUBLIC_KEY: 'YOUR_EMAILJS_PUBLIC_KEY_HERE', // Replace with your actual public key
+            FRONTEND_URL: 'http://localhost:3000'
+        };
+
+        // Initialize EmailJS
+        (function() {
+            if (CONFIG.EMAILJS_PUBLIC_KEY && CONFIG.EMAILJS_PUBLIC_KEY !== 'YOUR_EMAILJS_PUBLIC_KEY_HERE') {
+                emailjs.init(CONFIG.EMAILJS_PUBLIC_KEY);
+                document.getElementById('publicKey').textContent = CONFIG.EMAILJS_PUBLIC_KEY;
+                console.log('✅ EmailJS initialized with public key:', CONFIG.EMAILJS_PUBLIC_KEY);
+            } else {
+                console.log('⚠️ EmailJS public key not configured');
+                document.getElementById('publicKey').textContent = 'Not Configured';
+            }
+        })();
+
+        // Send employee invitation using EmailJS
+        async function sendEmployeeInvitation(emailData) {
+            try {
+                const templateParams = {
+                    'Employee Name': `${emailData.firstName} ${emailData.lastName}`,
+                    'Organization Name': emailData.organizationName,
+                    'Admin Name': emailData.adminName,
+                    'Admin Email': emailData.companyEmail,
+                    'Invite Link': emailData.invitationLink,
+                    'Company Portal Link': CONFIG.FRONTEND_URL
+                };
+
+                console.log('📧 Sending EmailJS invitation...');
+                console.log('📋 Template params:', templateParams);
+
+                const result = await emailjs.send(
+                    CONFIG.EMAILJS_SERVICE_ID,
+                    CONFIG.EMAILJS_TEMPLATE_ID,
+                    templateParams
+                );
+
+                console.log('✅ EmailJS invitation sent successfully:', result);
+                return { success: true, messageId: result.messageId };
+            } catch (error) {
+                console.error('❌ EmailJS sending failed:', error);
+                return { success: false, error: error.message };
+            }
+        }
+
+        // Handle form submission
+        document.getElementById('invitationForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submitBtn');
+            const messageDiv = document.getElementById('message');
+            
+            // Get form data
+            const formData = {
+                firstName: document.getElementById('firstName').value,
+                lastName: document.getElementById('lastName').value,
+                email: document.getElementById('email').value
+            };
+
+            // Show loading state
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Sending...';
+            messageDiv.innerHTML = '';
+
+            try {
+                // Call your backend API
+                const response = await fetch(`${CONFIG.BACKEND_URL}/api/employees/invite`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${localStorage.getItem('token') || 'your-auth-token'}` // Replace with actual token
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Send email using EmailJS
+                    const emailResult = await sendEmployeeInvitation(result.data.emailData);
+                    
+                    if (emailResult.success) {
+                        showMessage('✅ Employee invitation sent successfully!', 'success');
+                        // Clear form
+                        document.getElementById('invitationForm').reset();
+                    } else {
+                        showMessage(`⚠️ Employee created but email failed: ${emailResult.error}`, 'warning');
+                    }
+                } else {
+                    showMessage(`❌ Error: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage(`❌ Error: ${error.message}`, 'error');
+            } finally {
+                // Reset button state
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Send Invitation';
+            }
+        });
+
+        // Show message function
+        function showMessage(message, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.innerHTML = message;
+            messageDiv.className = `message ${type}`;
+        }
+
+        // Test EmailJS connection on page load
+        window.addEventListener('load', function() {
+            console.log('✅ EmailJS loaded successfully');
+            console.log('📧 Service ID:', CONFIG.EMAILJS_SERVICE_ID);
+            console.log('📧 Template ID:', CONFIG.EMAILJS_TEMPLATE_ID);
+        });
+    </script>
+</body>
+</html>
