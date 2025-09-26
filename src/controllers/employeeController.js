@@ -6,21 +6,27 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const crypto = require('crypto');
 const { sendEmployeeInvitation } = require('../utils/emailService');
+const jwt = require('jsonwebtoken');
 
 // @desc      Send employee invitation
 // @route     POST /api/employees/invite
 // @access    Private (Admin only)
 exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
-    const { firstName, lastName, email } = req.body;
+    const { firstName, lastName, email, salary } = req.body;
     const organizationId = req.user.organization; // From JWT token
 
     console.log('📧 Sending employee invitation...');
-    console.log('👤 Employee data:', { firstName, lastName, email });
+    console.log('👤 Employee data:', { firstName, lastName, email, salary });
     console.log('🏢 Organization ID:', organizationId);
 
     // Validate required fields
-    if (!firstName || !lastName || !email) {
-        return next(new ErrorResponse('First name, last name, and email are required', 400));
+    if (!firstName || !lastName || !email || !salary) {
+        return next(new ErrorResponse('First name, last name, email, and salary are required', 400));
+    }
+
+    // Validate salary is a valid number
+    if (isNaN(salary) || salary < 0) {
+        return next(new ErrorResponse('Salary must be a valid positive number', 400));
     }
 
     // Check if employee already exists
@@ -56,6 +62,8 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
                 firstName,
                 lastName,
                 email: email.toLowerCase(),
+                salary,
+                adminId: req.user._id,
                 invitationToken,
                 invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
                 invitationStatus: 'pending'
@@ -69,6 +77,8 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
             firstName,
             lastName,
             email: email.toLowerCase(),
+            salary,
+            adminId: req.user._id,
             organization: organizationId,
             invitationToken,
             invitationStatus: 'pending'
@@ -77,7 +87,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     }
 
     // Generate invitation link with all required data
-    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&employeeEmail=${encodeURIComponent(email)}`;
+    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&adminId=${req.user._id}&employeeEmail=${encodeURIComponent(email)}&salary=${salary}`;
     
     console.log('🔗 Invitation link generated:', invitationLink);
 
@@ -107,6 +117,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
                 firstName: employee.firstName,
                 lastName: employee.lastName,
                 email: employee.email,
+                salary: employee.salary,
                 invitationStatus: employee.invitationStatus,
                 invitationExpires: employee.invitationExpires
             },
@@ -154,6 +165,7 @@ exports.getEmployeeByToken = asyncHandler(async (req, res, next) => {
                 firstName: employee.firstName,
                 lastName: employee.lastName,
                 email: employee.email,
+                salary: employee.salary,
                 organization: employee.organization
             }
         }
@@ -223,6 +235,7 @@ exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
                 address: employee.address,
                 gender: employee.gender,
                 dateOfBirth: employee.dateOfBirth,
+                salary: employee.salary,
                 organization: employee.organization
             }
         }
@@ -273,5 +286,287 @@ exports.getEmployee = asyncHandler(async (req, res, next) => {
     res.status(200).json({
         success: true,
         data: employee
+    });
+});
+
+// @desc      Register new employee (Direct registration)
+// @route     POST /api/employees/register
+// @access    Private (Admin only)
+exports.registerEmployee = asyncHandler(async (req, res, next) => {
+    const {
+        firstName,
+        lastName,
+        email,
+        phone,
+        address,
+        gender,
+        dateOfBirth,
+        age,
+        aadharCardNumber,
+        employeeType,
+        advocateLicenseNumber,
+        internYear,
+        salary,
+        department,
+        position,
+        startDate,
+        emergencyContactName,
+        emergencyContactPhone,
+        emergencyContactRelation,
+        password,
+        confirmPassword
+    } = req.body;
+
+    const adminId = req.user._id; // From JWT token
+    const organizationId = req.user.organization; // From JWT token
+
+    console.log('📝 Registering new employee...');
+    console.log('👤 Employee data:', { firstName, lastName, email, employeeType });
+    console.log('👨‍💼 Admin ID:', adminId);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Validate required fields
+    const requiredFields = [
+        'firstName', 'lastName', 'email', 'phone', 'address', 'gender', 
+        'dateOfBirth', 'age', 'aadharCardNumber', 'employeeType', 'salary', 
+        'department', 'position', 'startDate', 'emergencyContactName', 
+        'emergencyContactPhone', 'emergencyContactRelation', 'password', 'confirmPassword'
+    ];
+
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+        return next(new ErrorResponse(`Missing required fields: ${missingFields.join(', ')}`, 400));
+    }
+
+    // Validate password confirmation
+    if (password !== confirmPassword) {
+        return next(new ErrorResponse('Password and confirm password do not match', 400));
+    }
+
+    // Validate employee type specific fields
+    if (employeeType === 'advocate' && !advocateLicenseNumber) {
+        return next(new ErrorResponse('Advocate license number is required for advocate employees', 400));
+    }
+
+    if (employeeType === 'intern' && !internYear) {
+        return next(new ErrorResponse('Intern year is required for intern employees', 400));
+    }
+
+    // Validate age calculation
+    const birthDate = new Date(dateOfBirth);
+    const today = new Date();
+    const calculatedAge = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        calculatedAge--;
+    }
+
+    if (calculatedAge !== age) {
+        return next(new ErrorResponse('Age does not match the calculated age from date of birth', 400));
+    }
+
+    // Find existing employee by email (invited employee)
+    const existingEmployee = await Employee.findOne({
+        email: email.toLowerCase(),
+        organization: organizationId
+    });
+
+    if (!existingEmployee) {
+        return next(new ErrorResponse('No invitation found for this email address. Please contact your admin to send an invitation.', 400));
+    }
+
+    // Check if employee has already completed registration
+    if (existingEmployee.invitationStatus === 'completed') {
+        if (existingEmployee.status === 'active') {
+            return next(new ErrorResponse('You have already completed your registration and your account is active. You cannot register again.', 400));
+        } else if (existingEmployee.status === 'pending') {
+            return next(new ErrorResponse('You have already completed your registration. Your account is pending admin approval. Please contact your admin for status updates.', 400));
+        } else {
+            return next(new ErrorResponse('You have already completed your registration. Please contact your admin for account status.', 400));
+        }
+    }
+
+    // Check if invitation has expired
+    if (existingEmployee.invitationStatus === 'expired') {
+        return next(new ErrorResponse('Your invitation has expired. Please contact your admin to send a new invitation.', 400));
+    }
+
+    // Get organization details
+    const organization = await Organization.findById(organizationId);
+    if (!organization) {
+        return next(new ErrorResponse('Organization not found', 404));
+    }
+
+    // Update existing employee with registration details
+    existingEmployee.phone = phone;
+    existingEmployee.address = address;
+    existingEmployee.gender = gender;
+    existingEmployee.dateOfBirth = new Date(dateOfBirth);
+    existingEmployee.age = age;
+    existingEmployee.aadharCardNumber = aadharCardNumber;
+    existingEmployee.employeeType = employeeType;
+    existingEmployee.department = department;
+    existingEmployee.position = position;
+    existingEmployee.startDate = new Date(startDate);
+    existingEmployee.emergencyContactName = emergencyContactName;
+    existingEmployee.emergencyContactPhone = emergencyContactPhone;
+    existingEmployee.emergencyContactRelation = emergencyContactRelation;
+    existingEmployee.password = password;
+    existingEmployee.invitationStatus = 'completed';
+    existingEmployee.status = 'pending';
+    existingEmployee.invitationToken = undefined; // Remove token after completion
+
+    // Add conditional fields based on employee type
+    if (employeeType === 'advocate') {
+        existingEmployee.advocateLicenseNumber = advocateLicenseNumber;
+    }
+
+    if (employeeType === 'intern') {
+        existingEmployee.internYear = internYear;
+    }
+
+    // Save updated employee
+    const employee = await existingEmployee.save();
+
+    console.log('✅ Employee registered successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        employeeType: employee.employeeType
+    });
+
+    // Generate JWT token for the employee
+    const token = jwt.sign(
+        { 
+            id: employee._id,
+            email: employee.email,
+            organization: employee.organization,
+            role: 'employee'
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRE || '30d' }
+    );
+
+    res.status(201).json({
+        success: true,
+        message: 'Employee registered successfully',
+        token,
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                phone: employee.phone,
+                address: employee.address,
+                gender: employee.gender,
+                dateOfBirth: employee.dateOfBirth,
+                age: employee.age,
+                aadharCardNumber: employee.aadharCardNumber,
+                employeeType: employee.employeeType,
+                advocateLicenseNumber: employee.advocateLicenseNumber,
+                internYear: employee.internYear,
+                salary: employee.salary,
+                department: employee.department,
+                position: employee.position,
+                startDate: employee.startDate,
+                emergencyContactName: employee.emergencyContactName,
+                emergencyContactPhone: employee.emergencyContactPhone,
+                emergencyContactRelation: employee.emergencyContactRelation,
+                organization: employee.organization,
+                adminId: employee.adminId,
+                invitationStatus: employee.invitationStatus,
+                status: employee.status,
+                createdAt: employee.createdAt
+            }
+        }
+    });
+});
+
+// @desc      Update employee status
+// @route     PUT /api/employees/:id/status
+// @access    Private (Admin only)
+exports.updateEmployeeStatus = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    const organizationId = req.user.organization;
+
+    console.log('🔄 Updating employee status...');
+    console.log('👤 Employee ID:', id);
+    console.log('📊 New Status:', status);
+
+    // Validate status
+    const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
+    if (!status || !validStatuses.includes(status)) {
+        return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+    }
+
+    // Find employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    // Update status
+    employee.status = status;
+    await employee.save();
+
+    console.log('✅ Employee status updated:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        newStatus: status
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee status updated successfully',
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                status: employee.status,
+                updatedAt: employee.updatedAt
+            }
+        }
+    });
+});
+
+// @desc      Get employees by status
+// @route     GET /api/employees/status/:status
+// @access    Private (Admin only)
+exports.getEmployeesByStatus = asyncHandler(async (req, res, next) => {
+    const { status } = req.params;
+    const organizationId = req.user.organization;
+
+    console.log('📋 Fetching employees by status:', status);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Validate status
+    const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
+    if (!validStatuses.includes(status)) {
+        return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+    }
+
+    const employees = await Employee.find({ 
+        organization: organizationId,
+        status: status 
+    })
+        .select('-password -invitationToken') // Exclude sensitive data
+        .sort({ createdAt: -1 });
+
+    console.log(`✅ Found ${employees.length} employees with status: ${status}`);
+
+    res.status(200).json({
+        success: true,
+        count: employees.length,
+        status: status,
+        data: employees
     });
 });

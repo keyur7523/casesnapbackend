@@ -1,8 +1,16 @@
 // models/Employee.js
 
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
 
 const EmployeeSchema = new mongoose.Schema({
+    // Admin Reference
+    adminId: {
+        type: mongoose.Schema.ObjectId,
+        ref: 'User',
+        required: [true, 'Admin ID is required']
+    },
+    
     // Basic Information
     firstName: {
         type: String,
@@ -30,12 +38,12 @@ const EmployeeSchema = new mongoose.Schema({
     // Contact Information
     phone: {
         type: String,
-        required: false, // Only required when completing registration
+        required: false, // Only required during full registration
         match: [/^\d{10}$/, 'Phone number must be a 10-digit number']
     },
     address: {
         type: String,
-        required: false, // Only required when completing registration
+        required: false, // Only required during full registration
         trim: true,
         maxlength: [200, 'Address cannot be more than 200 characters']
     },
@@ -43,12 +51,94 @@ const EmployeeSchema = new mongoose.Schema({
     // Personal Information
     gender: {
         type: String,
-        required: false, // Only required when completing registration
+        required: false, // Only required during full registration
         enum: ['Male', 'Female', 'Other', 'Prefer not to say']
     },
     dateOfBirth: {
         type: Date,
-        required: false // Only required when completing registration
+        required: false // Only required during full registration
+    },
+    age: {
+        type: Number,
+        required: false, // Only required during full registration
+        min: [18, 'Age must be at least 18'],
+        max: [100, 'Age cannot exceed 100']
+    },
+    aadharCardNumber: {
+        type: String,
+        required: false, // Only required during full registration
+        match: [/^\d{12}$/, 'Aadhar card number must be 12 digits'],
+        unique: true,
+        sparse: true // Allows null values but ensures uniqueness when present
+    },
+    
+    // Employment Information
+    employeeType: {
+        type: String,
+        required: false, // Only required during full registration
+        enum: ['advocate', 'intern', 'staff', 'other']
+    },
+    advocateLicenseNumber: {
+        type: String,
+        required: function() {
+            return this.employeeType === 'advocate';
+        },
+        trim: true
+    },
+    internYear: {
+        type: Number,
+        required: function() {
+            return this.employeeType === 'intern';
+        },
+        min: [1, 'Intern year must be at least 1'],
+        max: [4, 'Intern year cannot exceed 4']
+    },
+    salary: {
+        type: Number,
+        required: [true, 'Salary is required'],
+        min: [0, 'Salary cannot be negative']
+    },
+    department: {
+        type: String,
+        required: false, // Only required during full registration
+        trim: true,
+        maxlength: [100, 'Department name cannot exceed 100 characters']
+    },
+    position: {
+        type: String,
+        required: false, // Only required during full registration
+        trim: true,
+        maxlength: [100, 'Position cannot exceed 100 characters']
+    },
+    startDate: {
+        type: Date,
+        required: false // Only required during full registration
+    },
+    
+    // Emergency Contact Information
+    emergencyContactName: {
+        type: String,
+        required: false, // Only required during full registration
+        trim: true,
+        maxlength: [100, 'Emergency contact name cannot exceed 100 characters']
+    },
+    emergencyContactPhone: {
+        type: String,
+        required: false, // Only required during full registration
+        match: [/^\d{10}$/, 'Emergency contact phone must be a 10-digit number']
+    },
+    emergencyContactRelation: {
+        type: String,
+        required: false, // Only required during full registration
+        trim: true,
+        maxlength: [50, 'Emergency contact relation cannot exceed 50 characters']
+    },
+    
+    // Authentication
+    password: {
+        type: String,
+        required: false, // Only required during full registration
+        minlength: [6, 'Password must be at least 6 characters']
     },
     
     // Organization Reference
@@ -79,8 +169,8 @@ const EmployeeSchema = new mongoose.Schema({
     // Employee Status
     status: {
         type: String,
-        enum: ['active', 'inactive', 'terminated'],
-        default: 'active'
+        enum: ['pending', 'active', 'inactive', 'terminated'],
+        default: 'pending'
     },
     
     // Timestamps
@@ -98,6 +188,28 @@ const EmployeeSchema = new mongoose.Schema({
 
 // Index for better query performance
 EmployeeSchema.index({ organization: 1, email: 1 });
+
+// Hash password before saving
+EmployeeSchema.pre('save', async function(next) {
+    // Only hash the password if it has been modified (or is new) and is not empty
+    if (!this.isModified('password') || !this.password) {
+        return next();
+    }
+
+    try {
+        // Hash password with cost of 12
+        const salt = await bcrypt.genSalt(12);
+        this.password = await bcrypt.hash(this.password, salt);
+        next();
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Match password method
+EmployeeSchema.methods.matchPassword = async function(enteredPassword) {
+    return await bcrypt.compare(enteredPassword, this.password);
+};
 
 // Virtual for full name
 EmployeeSchema.virtual('fullName').get(function() {
