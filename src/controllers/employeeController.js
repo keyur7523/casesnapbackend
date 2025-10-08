@@ -1,0 +1,1312 @@
+// controllers/employeeController.js
+
+const Employee = require('../models/Employee');
+const Organization = require('../models/Organization');
+const asyncHandler = require('../middleware/asyncHandler');
+const ErrorResponse = require('../utils/errorResponse');
+const crypto = require('crypto');
+const { sendEmployeeInvitation } = require('../utils/emailService');
+const jwt = require('jsonwebtoken');
+
+// @desc      Send employee invitation
+// @route     POST /api/employees/invite
+// @access    Private (Admin only)
+exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
+    const { firstName, lastName, email, salary } = req.body;
+    const organizationId = req.user.organization; // From JWT token
+
+    console.log('📧 Sending employee invitation...');
+    console.log('👤 Employee data:', { firstName, lastName, email, salary });
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Validate required fields
+    if (!firstName || !lastName || !email || !salary) {
+        return next(new ErrorResponse('First name, last name, email, and salary are required', 400));
+    }
+
+    // Validate salary is a valid number
+    if (isNaN(salary) || salary < 0) {
+        return next(new ErrorResponse('Salary must be a valid positive number', 400));
+    }
+
+    // Check if employee already exists
+    const existingEmployee = await Employee.findOne({ 
+        email: email.toLowerCase(),
+        organization: organizationId 
+    });
+
+    if (existingEmployee) {
+        if (existingEmployee.invitationStatus === 'completed') {
+            return next(new ErrorResponse('An employee with this email already exists in your organization', 400));
+        } else if (existingEmployee.invitationStatus === 'pending') {
+            return next(new ErrorResponse('An invitation has already been sent to this email address', 400));
+        }
+    }
+
+    // Generate unique invitation token
+    const invitationToken = crypto.randomBytes(32).toString('hex');
+    
+    // Get organization details
+    const organization = await Organization.findById(organizationId);
+    if (!organization) {
+        return next(new ErrorResponse('Organization not found', 404));
+    }
+
+    // Create or update employee record
+    let employee;
+    if (existingEmployee) {
+        // Update existing pending invitation
+        employee = await Employee.findByIdAndUpdate(
+            existingEmployee._id,
+            {
+                firstName,
+                lastName,
+                email: email.toLowerCase(),
+                salary,
+                adminId: req.user._id,
+                invitationToken,
+                invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+                invitationStatus: 'pending'
+            },
+            { new: true, runValidators: true }
+        );
+        console.log('✅ Updated existing employee invitation');
+    } else {
+        // Create new employee record
+        employee = await Employee.create({
+            firstName,
+            lastName,
+            email: email.toLowerCase(),
+            salary,
+            adminId: req.user._id,
+            organization: organizationId,
+            invitationToken,
+            invitationStatus: 'pending'
+        });
+        console.log('✅ Created new employee invitation');
+    }
+
+    // Generate invitation link with all required data
+    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&adminId=${req.user._id}&employeeEmail=${encodeURIComponent(email)}&salary=${salary}`;
+    
+    console.log('🔗 Invitation link generated:', invitationLink);
+    console.log('🔑 Invitation token:', invitationToken);
+    console.log('📧 Employee email:', email);
+
+    // Send email with invitation link using SMTP
+    const emailResult = await sendEmployeeInvitation({
+        to: email,
+        firstName,
+        lastName,
+        organizationName: organization.companyName,
+        companyEmail: organization.companyEmail,
+        adminName: `${req.user.firstName} ${req.user.lastName}`,
+        invitationLink
+    });
+
+    if (emailResult.success) {
+        console.log('✅ Email sent successfully via SMTP');
+    } else {
+        console.log('⚠️ Email sending failed:', emailResult.message || emailResult.error);
+    }
+
+    res.status(201).json({
+        success: true,
+        message: 'Employee invitation sent successfully',
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                salary: employee.salary,
+                invitationStatus: employee.invitationStatus,
+                invitationExpires: employee.invitationExpires
+            },
+            invitationLink // For testing purposes
+        }
+    });
+});
+
+// @desc      Get employee by invitation token
+// @route     GET /api/employees/register/:token
+// @access    Public
+exports.getEmployeeByToken = asyncHandler(async (req, res, next) => {
+    const { token } = req.params;
+
+    console.log('🔍 Looking up employee by invitation token:', token);
+
+    // First try to find by invitation token (random string)
+    let employee = await Employee.findOne({ 
+        invitationToken: token,
+        invitationStatus: 'pending'
+    }).populate('organization', 'companyName companyEmail');
+
+    // If not found by invitation token, check if it's a JWT token
+    if (!employee) {
+        console.log('🔍 Not found by invitation token, checking if it\'s a JWT token...');
+        
+        try {
+            const jwt = require('jsonwebtoken');
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            
+            console.log('🔍 JWT token decoded:', decoded);
+            
+            // If it's a JWT token, find employee by ID
+            if (decoded.id) {
+                employee = await Employee.findOne({ 
+                    _id: decoded.id,
+                    invitationStatus: 'pending'
+                }).populate('organization', 'companyName companyEmail');
+                
+                if (employee) {
+                    console.log('✅ Employee found by JWT token ID');
+                }
+            }
+        } catch (jwtError) {
+            console.log('🔍 Not a valid JWT token:', jwtError.message);
+        }
+    }
+
+    if (!employee) {
+        console.log('❌ No employee found with token:', token);
+        return next(new ErrorResponse('Invalid or expired invitation link', 400));
+    }
+
+    // Check if invitation has expired
+    if (employee.invitationExpires && employee.invitationExpires < new Date()) {
+        employee.invitationStatus = 'expired';
+        await employee.save();
+        return next(new ErrorResponse('Invitation link has expired', 400));
+    }
+
+    console.log('✅ Employee found:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        organization: employee.organization?.companyName || 'N/A'
+    });
+
+    res.status(200).json({
+        success: true,
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                salary: employee.salary,
+                organization: employee.organization
+            }
+        }
+    });
+});
+
+// @desc      Complete employee registration
+// @route     POST /api/employees/register/:token
+// @access    Public
+exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
+    const { token } = req.params;
+    const { phone, address, gender, dateOfBirth } = req.body;
+
+    console.log('📝 Completing employee registration...');
+    console.log('🔑 Token:', token);
+    console.log('📋 Registration data:', { phone, address, gender, dateOfBirth });
+
+    // Validate required fields for completion
+    if (!phone || !address || !gender || !dateOfBirth) {
+        return next(new ErrorResponse('Phone, address, gender, and date of birth are required to complete registration', 400));
+    }
+
+    // Find employee by token
+    const employee = await Employee.findOne({ 
+        invitationToken: token,
+        invitationStatus: 'pending'
+    }).populate('organization');
+
+    if (!employee) {
+        return next(new ErrorResponse('Invalid or expired invitation link', 400));
+    }
+
+    // Check if invitation has expired
+    if (employee.invitationExpires < new Date()) {
+        employee.invitationStatus = 'expired';
+        await employee.save();
+        return next(new ErrorResponse('Invitation link has expired', 400));
+    }
+
+    // Update employee with registration details
+    employee.phone = phone;
+    employee.address = address;
+    employee.gender = gender;
+    employee.dateOfBirth = new Date(dateOfBirth);
+    employee.invitationStatus = 'completed';
+    employee.invitationToken = undefined; // Remove token after completion
+
+    await employee.save();
+
+    console.log('✅ Employee registration completed:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        organization: employee.organization.companyName
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee registration completed successfully',
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                phone: employee.phone,
+                address: employee.address,
+                gender: employee.gender,
+                dateOfBirth: employee.dateOfBirth,
+                salary: employee.salary,
+                organization: employee.organization
+            }
+        }
+    });
+});
+
+// @desc      Get all employees for an organization
+// @route     GET /api/employees
+// @access    Private (Admin only)
+exports.getEmployees = asyncHandler(async (req, res, next) => {
+    const organizationId = req.user.organization;
+
+    console.log('📋 Fetching employees for organization:', organizationId);
+
+    const employees = await Employee.find({ organization: organizationId })
+        .select('-invitationToken') // Exclude sensitive data
+        .sort({ createdAt: -1 });
+
+    console.log(`✅ Found ${employees.length} employees`);
+
+    res.status(200).json({
+        success: true,
+        count: employees.length,
+        data: employees
+    });
+});
+
+// @desc      Get single employee
+// @route     GET /api/employees/:id
+// @access    Private (Admin only)
+exports.getEmployee = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const organizationId = req.user.organization;
+
+    console.log('🔍 Fetching employee:', id);
+
+    const employee = await Employee.findOne({ 
+        _id: id, 
+        organization: organizationId 
+    }).select('-invitationToken');
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    console.log('✅ Employee found:', employee.fullName);
+
+    res.status(200).json({
+        success: true,
+        data: employee
+    });
+});
+
+// @desc      Register new employee (Direct registration)
+// @route     POST /api/employees/register
+// @access    Private (Admin only)
+exports.registerEmployee = asyncHandler(async (req, res, next) => {
+    const {
+        firstName,
+        lastName,
+        email,
+        phone,
+        address,
+        gender,
+        dateOfBirth,
+        age,
+        aadharCardNumber,
+        employeeType,
+        advocateLicenseNumber,
+        internYear,
+        salary,
+        department,
+        position,
+        startDate,
+        emergencyContactName,
+        emergencyContactPhone,
+        emergencyContactRelation,
+        password,
+        confirmPassword
+    } = req.body;
+
+    const adminId = req.user._id; // From JWT token
+    const organizationId = req.user.organization; // From JWT token
+
+    console.log('📝 Registering new employee...');
+    console.log('👤 Employee data:', { firstName, lastName, email, employeeType });
+    console.log('👨‍💼 Admin ID:', adminId);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Validate required fields
+    const requiredFields = [
+        'firstName', 'lastName', 'email', 'phone', 'address', 'gender', 
+        'dateOfBirth', 'age', 'aadharCardNumber', 'employeeType', 'salary', 
+        'department', 'position', 'startDate', 'emergencyContactName', 
+        'emergencyContactPhone', 'emergencyContactRelation', 'password', 'confirmPassword'
+    ];
+
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+        return next(new ErrorResponse(`Missing required fields: ${missingFields.join(', ')}`, 400));
+    }
+
+    // Validate password confirmation
+    if (password !== confirmPassword) {
+        return next(new ErrorResponse('Password and confirm password do not match', 400));
+    }
+
+    // Validate employee type specific fields
+    if (employeeType === 'advocate' && !advocateLicenseNumber) {
+        return next(new ErrorResponse('Advocate license number is required for advocate employees', 400));
+    }
+
+    if (employeeType === 'intern' && !internYear) {
+        return next(new ErrorResponse('Intern year is required for intern employees', 400));
+    }
+
+    // Validate age calculation
+    const birthDate = new Date(dateOfBirth);
+    const today = new Date();
+    const calculatedAge = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        calculatedAge--;
+    }
+
+    if (calculatedAge !== age) {
+        return next(new ErrorResponse('Age does not match the calculated age from date of birth', 400));
+    }
+
+    // Find existing employee by email (invited employee)
+    const existingEmployee = await Employee.findOne({
+        email: email.toLowerCase(),
+        organization: organizationId
+    });
+
+    if (!existingEmployee) {
+        return next(new ErrorResponse('No invitation found for this email address. Please contact your admin to send an invitation.', 400));
+    }
+
+    // Check if employee has already completed registration
+    if (existingEmployee.invitationStatus === 'completed') {
+        if (existingEmployee.status === 'active') {
+            return next(new ErrorResponse('You have already completed your registration and your account is active. You cannot register again.', 400));
+        } else if (existingEmployee.status === 'pending') {
+            return next(new ErrorResponse('You have already completed your registration. Your account is pending admin approval. Please contact your admin for status updates.', 400));
+        } else {
+            return next(new ErrorResponse('You have already completed your registration. Please contact your admin for account status.', 400));
+        }
+    }
+
+    // Check if invitation has expired
+    if (existingEmployee.invitationStatus === 'expired') {
+        return next(new ErrorResponse('Your invitation has expired. Please contact your admin to send a new invitation.', 400));
+    }
+
+    // Get organization details
+    const organization = await Organization.findById(organizationId);
+    if (!organization) {
+        return next(new ErrorResponse('Organization not found', 404));
+    }
+
+    // Update existing employee with registration details
+    existingEmployee.phone = phone;
+    existingEmployee.address = address;
+    existingEmployee.gender = gender;
+    existingEmployee.dateOfBirth = new Date(dateOfBirth);
+    existingEmployee.age = age;
+    existingEmployee.aadharCardNumber = aadharCardNumber;
+    existingEmployee.employeeType = employeeType;
+    existingEmployee.department = department;
+    existingEmployee.position = position;
+    existingEmployee.startDate = new Date(startDate);
+    existingEmployee.emergencyContactName = emergencyContactName;
+    existingEmployee.emergencyContactPhone = emergencyContactPhone;
+    existingEmployee.emergencyContactRelation = emergencyContactRelation;
+    existingEmployee.password = password;
+    existingEmployee.invitationStatus = 'completed';
+    existingEmployee.status = 'pending';
+    existingEmployee.invitationToken = undefined; // Remove token after completion
+
+    // Add conditional fields based on employee type
+    if (employeeType === 'advocate') {
+        existingEmployee.advocateLicenseNumber = advocateLicenseNumber;
+    }
+
+    if (employeeType === 'intern') {
+        existingEmployee.internYear = internYear;
+    }
+
+    // Save updated employee
+    const employee = await existingEmployee.save();
+
+    console.log('✅ Employee registered successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        employeeType: employee.employeeType
+    });
+
+    // Generate JWT token for the employee
+    const token = jwt.sign(
+        { 
+            id: employee._id,
+            email: employee.email,
+            organization: employee.organization,
+            role: 'employee'
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: process.env.JWT_EXPIRE || '30d' }
+    );
+
+    res.status(201).json({
+        success: true,
+        message: 'Employee registered successfully',
+        token,
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                phone: employee.phone,
+                address: employee.address,
+                gender: employee.gender,
+                dateOfBirth: employee.dateOfBirth,
+                age: employee.age,
+                aadharCardNumber: employee.aadharCardNumber,
+                employeeType: employee.employeeType,
+                advocateLicenseNumber: employee.advocateLicenseNumber,
+                internYear: employee.internYear,
+                salary: employee.salary,
+                department: employee.department,
+                position: employee.position,
+                startDate: employee.startDate,
+                emergencyContactName: employee.emergencyContactName,
+                emergencyContactPhone: employee.emergencyContactPhone,
+                emergencyContactRelation: employee.emergencyContactRelation,
+                organization: employee.organization,
+                adminId: employee.adminId,
+                invitationStatus: employee.invitationStatus,
+                status: employee.status,
+                createdAt: employee.createdAt
+            }
+        }
+    });
+});
+
+// @desc      Update employee status
+// @route     POST /api/employees/:id/status
+// @access    Private (Admin only)
+exports.updateEmployeeStatus = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const { status, reason, notes } = req.body;
+    const organizationId = req.user.organization;
+
+    console.log('🔄 Updating employee status...');
+    console.log('👤 Employee ID:', id);
+    console.log('📊 New Status:', status);
+    console.log('📝 Reason:', reason);
+    console.log('📄 Notes:', notes);
+
+    // Validate status
+    const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
+    if (!status || !validStatuses.includes(status)) {
+        return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+    }
+
+    // Find employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    // Store previous status for logging
+    const previousStatus = employee.status;
+
+    // Update status and additional fields
+    employee.status = status;
+    
+    // Add status change tracking (for future audit trail)
+    if (!employee.statusHistory) {
+        employee.statusHistory = [];
+    }
+    
+    employee.statusHistory.push({
+        from: previousStatus,
+        to: status,
+        changedBy: req.user._id,
+        changedAt: new Date(),
+        reason: reason || null,
+        notes: notes || null
+    });
+
+    await employee.save();
+
+    console.log('✅ Employee status updated:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        previousStatus: previousStatus,
+        newStatus: status,
+        reason: reason
+    });
+
+    // Send different messages based on status change
+    let message = 'Employee status updated successfully';
+    if (status === 'active' && previousStatus === 'pending') {
+        message = 'Employee activated successfully. They can now login to the system.';
+    } else if (status === 'inactive' && previousStatus === 'active') {
+        message = 'Employee deactivated. They can no longer login to the system.';
+    } else if (status === 'terminated') {
+        message = 'Employee terminated. They can no longer access the system.';
+    }
+
+    res.status(200).json({
+        success: true,
+        message: message,
+        data: {
+            employee: {
+                id: employee._id,
+                firstName: employee.firstName,
+                lastName: employee.lastName,
+                email: employee.email,
+                status: employee.status,
+                previousStatus: previousStatus,
+                updatedAt: employee.updatedAt,
+                statusHistory: employee.statusHistory.slice(-3) // Last 3 status changes
+            }
+        }
+    });
+});
+
+// @desc      Get employees by status
+// @route     GET /api/employees/status/:status
+// @access    Private (Admin only)
+exports.getEmployeesByStatus = asyncHandler(async (req, res, next) => {
+    const { status } = req.params;
+    const organizationId = req.user.organization;
+
+    console.log('📋 Fetching employees by status:', status);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Validate status
+    const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
+    if (!validStatuses.includes(status)) {
+        return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+    }
+
+    const employees = await Employee.find({ 
+        organization: organizationId,
+        status: status 
+    })
+        .select('-password -invitationToken') // Exclude sensitive data
+        .sort({ createdAt: -1 });
+
+    console.log(`✅ Found ${employees.length} employees with status: ${status}`);
+
+    res.status(200).json({
+        success: true,
+        count: employees.length,
+        status: status,
+        data: employees
+    });
+});
+
+// @desc      Get all employees for admin management (including soft deleted) with pagination
+// @route     GET /api/employees/admin/all
+// @access    Private (Admin only)
+exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
+    const organizationId = req.user.organization;
+    const { 
+        includeDeleted = false,
+        includeArchived = false,
+        status, 
+        search,
+        page = 1,
+        limit = 10,
+        sortBy = 'createdAt',
+        sortOrder = 'desc'
+    } = req.query;
+
+    console.log('👨‍💼 Admin fetching employees with pagination');
+    console.log('🏢 Organization ID:', organizationId);
+    console.log('🔍 Include deleted:', includeDeleted);
+    console.log('📦 Include archived:', includeArchived);
+    console.log('📊 Status filter:', status);
+    console.log('🔎 Search term:', search);
+    console.log('📄 Page:', page, 'Limit:', limit);
+    console.log('🔄 Sort by:', sortBy, 'Order:', sortOrder);
+    
+    // Debug: Check if organization ID exists
+    if (!organizationId) {
+        console.log('❌ DEBUG: No organization ID found in request');
+        return next(new ErrorResponse('Admin organization not found', 400));
+    }
+
+    // Validate pagination parameters
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    
+    if (pageNum < 1) {
+        return next(new ErrorResponse('Page number must be greater than 0', 400));
+    }
+    
+    if (limitNum < 1 || limitNum > 100) {
+        return next(new ErrorResponse('Limit must be between 1 and 100', 400));
+    }
+
+    // Validate sort parameters
+    const validSortFields = ['createdAt', 'updatedAt', 'firstName', 'lastName', 'email', 'salary', 'status'];
+    if (!validSortFields.includes(sortBy)) {
+        return next(new ErrorResponse(`Invalid sort field. Must be one of: ${validSortFields.join(', ')}`, 400));
+    }
+
+    const validSortOrders = ['asc', 'desc'];
+    if (!validSortOrders.includes(sortOrder)) {
+        return next(new ErrorResponse(`Invalid sort order. Must be one of: ${validSortOrders.join(', ')}`, 400));
+    }
+
+    // Build query
+    let query = { organization: organizationId };
+
+    // Include soft deleted employees if requested
+    if (includeDeleted !== 'true') {
+        query.isDeleted = false;
+    }
+
+    // Include archived employees if requested (default: only show employed)
+    if (includeArchived !== 'true') {
+        query.employmentStatus = 'employed';
+    }
+
+    // Filter by status if provided
+    if (status) {
+        const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
+        if (!validStatuses.includes(status)) {
+            return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+        }
+        query.status = status;
+    }
+
+    // Search functionality
+    if (search) {
+        query.$or = [
+            { firstName: { $regex: search, $options: 'i' } },
+            { lastName: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+            { department: { $regex: search, $options: 'i' } },
+            { position: { $regex: search, $options: 'i' } }
+        ];
+    }
+
+    // Calculate pagination
+    const skip = (pageNum - 1) * limitNum;
+    
+    // Build sort object
+    const sortObj = {};
+    sortObj[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    // Debug: Log the query being used
+    console.log('🔍 DEBUG: Query object:', JSON.stringify(query, null, 2));
+    
+    // Get total count for pagination metadata
+    const totalCount = await Employee.countDocuments(query);
+    console.log('🔍 DEBUG: Total count from database:', totalCount);
+    
+    const totalPages = Math.ceil(totalCount / limitNum);
+
+    // Get employees with pagination
+    const employees = await Employee.find(query)
+        .select('-password -invitationToken') // Exclude sensitive data
+        .populate('adminId', 'firstName lastName email')
+        .sort(sortObj)
+        .skip(skip)
+        .limit(limitNum);
+
+    console.log(`✅ Found ${employees.length} employees (${totalCount} total) for admin management`);
+    
+    // Debug: Log sample employee if found
+    if (employees.length > 0) {
+        console.log('🔍 DEBUG: Sample employee:', {
+            id: employees[0]._id,
+            name: `${employees[0].firstName} ${employees[0].lastName}`,
+            email: employees[0].email,
+            organization: employees[0].organization,
+            status: employees[0].status,
+            isDeleted: employees[0].isDeleted
+        });
+    } else {
+        console.log('🔍 DEBUG: No employees found with current query');
+        
+        // Debug: Check if there are any employees at all
+        const allEmployees = await Employee.find({});
+        console.log('🔍 DEBUG: Total employees in database:', allEmployees.length);
+        
+        if (allEmployees.length > 0) {
+            console.log('🔍 DEBUG: Sample employee from database:', {
+                id: allEmployees[0]._id,
+                name: `${allEmployees[0].firstName} ${allEmployees[0].lastName}`,
+                email: allEmployees[0].email,
+                organization: allEmployees[0].organization,
+                status: allEmployees[0].status,
+                isDeleted: allEmployees[0].isDeleted
+            });
+        }
+    }
+
+    res.status(200).json({
+        success: true,
+        count: employees.length,
+        totalCount: totalCount,
+        totalPages: totalPages,
+        currentPage: pageNum,
+        hasNextPage: pageNum < totalPages,
+        hasPrevPage: pageNum > 1,
+        nextPage: pageNum < totalPages ? pageNum + 1 : null,
+        prevPage: pageNum > 1 ? pageNum - 1 : null,
+        data: employees,
+        filters: {
+            includeDeleted: includeDeleted === 'true',
+            includeArchived: includeArchived === 'true',
+            status: status || 'all',
+            search: search || null
+        },
+        pagination: {
+            page: pageNum,
+            limit: limitNum,
+            sortBy: sortBy,
+            sortOrder: sortOrder
+        }
+    });
+});
+
+// @desc      Update employee by admin
+// @route     PUT /api/employees/admin/:id
+// @access    Private (Admin only)
+exports.updateEmployeeByAdmin = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const organizationId = req.user.organization;
+    const updateData = req.body;
+
+    console.log('✏️ Admin updating employee:', id);
+    console.log('🏢 Organization ID:', organizationId);
+    console.log('📝 Update data:', updateData);
+
+    // Find employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId,
+        isDeleted: false
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    // Validate employee type specific fields if being updated
+    if (updateData.employeeType === 'advocate' && !updateData.advocateLicenseNumber) {
+        return next(new ErrorResponse('Advocate license number is required for advocate employees', 400));
+    }
+
+    if (updateData.employeeType === 'intern' && !updateData.internYear) {
+        return next(new ErrorResponse('Intern year is required for intern employees', 400));
+    }
+
+    // Update employee
+    const updatedEmployee = await Employee.findByIdAndUpdate(
+        id,
+        updateData,
+        { new: true, runValidators: true }
+    ).select('-password -invitationToken');
+
+    console.log('✅ Employee updated successfully:', {
+        id: updatedEmployee._id,
+        name: `${updatedEmployee.firstName} ${updatedEmployee.lastName}`,
+        email: updatedEmployee.email
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee updated successfully',
+        data: updatedEmployee
+    });
+});
+
+// @desc      Soft delete employee by admin
+// @route     DELETE /api/employees/admin/:id
+// @access    Private (Admin only)
+exports.softDeleteEmployeeByAdmin = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const organizationId = req.user.organization;
+
+    console.log('🗑️ Admin soft deleting employee:', id);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Find employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId,
+        isDeleted: false
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    // Soft delete employee
+    employee.isDeleted = true;
+    employee.deletedAt = new Date();
+    employee.status = 'terminated'; // Also update status to terminated
+    await employee.save();
+
+    console.log('✅ Employee soft deleted successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        deletedAt: employee.deletedAt
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee deleted successfully',
+        data: {
+            id: employee._id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            deletedAt: employee.deletedAt,
+            status: employee.status
+        }
+    });
+});
+
+// @desc      Restore soft deleted employee by admin
+// @route     PUT /api/employees/admin/:id/restore
+// @access    Private (Admin only)
+exports.restoreEmployeeByAdmin = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const organizationId = req.user.organization;
+
+    console.log('♻️ Admin restoring employee:', id);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Find soft deleted employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId,
+        isDeleted: true
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Deleted employee not found', 404));
+    }
+
+    // Restore employee
+    employee.isDeleted = false;
+    employee.deletedAt = null;
+    employee.status = 'pending'; // Reset to pending status
+    await employee.save();
+
+    console.log('✅ Employee restored successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee restored successfully',
+        data: {
+            id: employee._id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            status: employee.status,
+            restoredAt: new Date()
+        }
+    });
+});
+
+// @desc      Get employee's own profile
+// @route     GET /api/employees/profile
+// @access    Private (Employee only)
+exports.getEmployeeProfile = asyncHandler(async (req, res, next) => {
+    const employeeId = req.user._id;
+
+    console.log('👤 Employee fetching own profile:', employeeId);
+
+    const employee = await Employee.findById(employeeId)
+        .select('-password -invitationToken') // Exclude sensitive data
+        .populate('organization', 'companyName companyEmail')
+        .populate('adminId', 'firstName lastName email');
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee profile not found', 404));
+    }
+
+    // Check if employee is soft deleted
+    if (employee.isDeleted) {
+        return next(new ErrorResponse('Your account has been deactivated. Please contact your administrator.', 403));
+    }
+
+    console.log('✅ Employee profile retrieved:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email
+    });
+
+    res.status(200).json({
+        success: true,
+        data: {
+            id: employee._id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            phone: employee.phone,
+            address: employee.address,
+            gender: employee.gender,
+            dateOfBirth: employee.dateOfBirth,
+            age: employee.age,
+            aadharCardNumber: employee.aadharCardNumber,
+            employeeType: employee.employeeType,
+            advocateLicenseNumber: employee.advocateLicenseNumber,
+            internYear: employee.internYear,
+            salary: employee.salary,
+            department: employee.department,
+            position: employee.position,
+            startDate: employee.startDate,
+            emergencyContactName: employee.emergencyContactName,
+            emergencyContactPhone: employee.emergencyContactPhone,
+            emergencyContactRelation: employee.emergencyContactRelation,
+            organization: employee.organization,
+            adminId: employee.adminId,
+            status: employee.status,
+            createdAt: employee.createdAt,
+            updatedAt: employee.updatedAt
+        }
+    });
+});
+
+// @desc      Update employee's own profile
+// @route     PUT /api/employees/profile
+// @access    Private (Employee only)
+exports.updateEmployeeProfile = asyncHandler(async (req, res, next) => {
+    const employeeId = req.user._id;
+    const updateData = req.body;
+
+    console.log('✏️ Employee updating own profile:', employeeId);
+    console.log('📝 Update data:', updateData);
+
+    // Find employee
+    const employee = await Employee.findById(employeeId);
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee profile not found', 404));
+    }
+
+    // Check if employee is soft deleted
+    if (employee.isDeleted) {
+        return next(new ErrorResponse('Your account has been deactivated. Please contact your administrator.', 403));
+    }
+
+    // Define allowed fields that employees can update themselves
+    const allowedFields = [
+        'phone',
+        'address',
+        'emergencyContactName',
+        'emergencyContactPhone',
+        'emergencyContactRelation'
+    ];
+
+    // Filter update data to only include allowed fields
+    const filteredUpdateData = {};
+    Object.keys(updateData).forEach(key => {
+        if (allowedFields.includes(key)) {
+            filteredUpdateData[key] = updateData[key];
+        }
+    });
+
+    // Validate emergency contact phone if provided
+    if (filteredUpdateData.emergencyContactPhone) {
+        const phoneRegex = /^\d{10}$/;
+        if (!phoneRegex.test(filteredUpdateData.emergencyContactPhone)) {
+            return next(new ErrorResponse('Emergency contact phone must be a 10-digit number', 400));
+        }
+    }
+
+    // Update employee with filtered data
+    const updatedEmployee = await Employee.findByIdAndUpdate(
+        employeeId,
+        filteredUpdateData,
+        { new: true, runValidators: true }
+    ).select('-password -invitationToken');
+
+    console.log('✅ Employee profile updated successfully:', {
+        id: updatedEmployee._id,
+        name: `${updatedEmployee.firstName} ${updatedEmployee.lastName}`,
+        email: updatedEmployee.email
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Profile updated successfully',
+        data: {
+            id: updatedEmployee._id,
+            firstName: updatedEmployee.firstName,
+            lastName: updatedEmployee.lastName,
+            email: updatedEmployee.email,
+            phone: updatedEmployee.phone,
+            address: updatedEmployee.address,
+            emergencyContactName: updatedEmployee.emergencyContactName,
+            emergencyContactPhone: updatedEmployee.emergencyContactPhone,
+            emergencyContactRelation: updatedEmployee.emergencyContactRelation,
+            updatedAt: updatedEmployee.updatedAt
+        }
+    });
+});
+
+// @desc      Change employee's own password
+// @route     PUT /api/employees/profile/password
+// @access    Private (Employee only)
+exports.changeEmployeePassword = asyncHandler(async (req, res, next) => {
+    const employeeId = req.user._id;
+    const { currentPassword, newPassword } = req.body;
+
+    console.log('🔐 Employee changing password:', employeeId);
+
+    // Validate required fields
+    if (!currentPassword || !newPassword) {
+        return next(new ErrorResponse('Current password and new password are required', 400));
+    }
+
+    // Validate new password length
+    if (newPassword.length < 6) {
+        return next(new ErrorResponse('New password must be at least 6 characters long', 400));
+    }
+
+    // Find employee with password field
+    const employee = await Employee.findById(employeeId).select('+password');
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee profile not found', 404));
+    }
+
+    // Check if employee is soft deleted
+    if (employee.isDeleted) {
+        return next(new ErrorResponse('Your account has been deactivated. Please contact your administrator.', 403));
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await employee.matchPassword(currentPassword);
+    if (!isCurrentPasswordValid) {
+        return next(new ErrorResponse('Current password is incorrect', 400));
+    }
+
+    // Update password
+    employee.password = newPassword;
+    await employee.save();
+
+    console.log('✅ Employee password changed successfully:', {
+        id: employee._id,
+        email: employee.email
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Password changed successfully'
+    });
+});
+
+// @desc      Archive employee by admin (employee stops working)
+// @route     POST /api/employees/admin/:id/archive
+// @access    Private (Admin only)
+exports.archiveEmployeeByAdmin = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const { reason, notes } = req.body;
+    const organizationId = req.user.organization;
+
+    console.log('📦 Admin archiving employee:', id);
+    console.log('🏢 Organization ID:', organizationId);
+    console.log('📝 Archive reason:', reason);
+
+    // Find employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId,
+        isDeleted: false
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Employee not found', 404));
+    }
+
+    // Check if employee is already archived
+    if (employee.employmentStatus === 'archived') {
+        return next(new ErrorResponse('Employee is already archived', 400));
+    }
+
+    // Store previous status for logging
+    const previousEmploymentStatus = employee.employmentStatus;
+    const previousStatus = employee.status;
+
+    // Archive employee
+    employee.employmentStatus = 'archived';
+    employee.archivedAt = new Date();
+    employee.archivedBy = req.user._id;
+    employee.archiveReason = reason || 'No reason provided';
+    
+    // Set status to terminated if not already
+    if (employee.status !== 'terminated') {
+        employee.status = 'terminated';
+    }
+    
+    // Add to status history for audit trail
+    if (!employee.statusHistory) {
+        employee.statusHistory = [];
+    }
+    
+    employee.statusHistory.push({
+        from: previousStatus,
+        to: 'terminated',
+        changedBy: req.user._id,
+        changedAt: new Date(),
+        reason: 'Archived by admin',
+        notes: notes || reason || 'Employee archived - stopped working'
+    });
+
+    await employee.save();
+
+    console.log('✅ Employee archived successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        previousEmploymentStatus: previousEmploymentStatus,
+        newEmploymentStatus: 'archived',
+        archivedAt: employee.archivedAt,
+        archivedBy: req.user._id,
+        reason: employee.archiveReason
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee archived successfully. Employee data is preserved and can be unarchived if needed.',
+        data: {
+            id: employee._id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            employmentStatus: employee.employmentStatus,
+            status: employee.status,
+            archivedAt: employee.archivedAt,
+            archivedBy: employee.archivedBy,
+            archiveReason: employee.archiveReason
+        }
+    });
+});
+
+// @desc      Unarchive employee by admin (restore archived employee)
+// @route     PUT /api/employees/admin/:id/unarchive
+// @access    Private (Admin only)
+exports.unarchiveEmployeeByAdmin = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const { notes } = req.body;
+    const organizationId = req.user.organization;
+
+    console.log('📤 Admin unarchiving employee:', id);
+    console.log('🏢 Organization ID:', organizationId);
+
+    // Find archived employee
+    const employee = await Employee.findOne({
+        _id: id,
+        organization: organizationId,
+        employmentStatus: 'archived',
+        isDeleted: false
+    });
+
+    if (!employee) {
+        return next(new ErrorResponse('Archived employee not found', 404));
+    }
+
+    // Store previous status for logging
+    const previousEmploymentStatus = employee.employmentStatus;
+
+    // Unarchive employee
+    employee.employmentStatus = 'employed';
+    employee.status = 'pending'; // Reset to pending for admin to review
+    
+    // Clear archive fields
+    const archivedInfo = {
+        archivedAt: employee.archivedAt,
+        archivedBy: employee.archivedBy,
+        archiveReason: employee.archiveReason
+    };
+    
+    employee.archivedAt = null;
+    employee.archivedBy = null;
+    employee.archiveReason = null;
+    
+    // Add to status history for audit trail
+    if (!employee.statusHistory) {
+        employee.statusHistory = [];
+    }
+    
+    employee.statusHistory.push({
+        from: 'terminated',
+        to: 'pending',
+        changedBy: req.user._id,
+        changedAt: new Date(),
+        reason: 'Unarchived by admin',
+        notes: notes || 'Employee unarchived - restored to active employment'
+    });
+
+    await employee.save();
+
+    console.log('✅ Employee unarchived successfully:', {
+        id: employee._id,
+        name: `${employee.firstName} ${employee.lastName}`,
+        email: employee.email,
+        previousEmploymentStatus: previousEmploymentStatus,
+        newEmploymentStatus: 'employed',
+        unarchivedAt: new Date(),
+        unarchivedBy: req.user._id,
+        previousArchiveInfo: archivedInfo
+    });
+
+    res.status(200).json({
+        success: true,
+        message: 'Employee unarchived successfully. Employee status set to pending for admin review.',
+        data: {
+            id: employee._id,
+            firstName: employee.firstName,
+            lastName: employee.lastName,
+            email: employee.email,
+            employmentStatus: employee.employmentStatus,
+            status: employee.status,
+            unarchivedAt: new Date(),
+            previousArchiveInfo: archivedInfo
+        }
+    });
+});
