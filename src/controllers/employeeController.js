@@ -123,9 +123,37 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
         if (error.code === 11000) {
             const field = Object.keys(error.keyPattern)[0];
             if (field === 'aadharCardNumber') {
-                return next(new ErrorResponse('There is a data conflict with employee records. Please contact support to resolve this issue.', 400));
+                // Try to fix the Aadhar conflict by updating the existing employee
+                console.log('🔧 Attempting to fix Aadhar conflict by updating existing employee...');
+                try {
+                    const existingEmployee = await Employee.findOne({ 
+                        email: email.toLowerCase(),
+                        organization: organizationId 
+                    });
+                    
+                    if (existingEmployee) {
+                        // Clear the Aadhar number and update invitation details
+                        existingEmployee.aadharCardNumber = undefined;
+                        existingEmployee.firstName = firstName;
+                        existingEmployee.lastName = lastName;
+                        existingEmployee.salary = salary || 0;
+                        existingEmployee.adminId = req.user._id;
+                        existingEmployee.invitationToken = invitationToken;
+                        existingEmployee.invitationExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+                        existingEmployee.invitationStatus = 'pending';
+                        
+                        employee = await existingEmployee.save();
+                        console.log('✅ Fixed Aadhar conflict by updating existing employee');
+                    } else {
+                        return next(new ErrorResponse('Unable to resolve data conflict. Please try with a different email address.', 400));
+                    }
+                } catch (fixError) {
+                    console.error('❌ Failed to fix Aadhar conflict:', fixError.message);
+                    return next(new ErrorResponse('Unable to resolve data conflict. Please try with a different email address.', 400));
+                }
+            } else {
+                return next(new ErrorResponse(`An employee with this ${field} already exists. Please use a different ${field}.`, 400));
             }
-            return next(new ErrorResponse(`An employee with this ${field} already exists. Please use a different ${field}.`, 400));
         }
         
         // Generic error
