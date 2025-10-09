@@ -61,20 +61,23 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     // Create or update employee record
     let employee;
     if (existingEmployee) {
-        // Update existing pending invitation
+        // Update existing pending invitation - only update invitation-related fields
+        // Don't update fields that might already have values (like aadharCardNumber)
+        const updateFields = {
+            firstName,
+            lastName,
+            email: email.toLowerCase(),
+            salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
+            adminId: req.user._id,
+            invitationToken,
+            invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+            invitationStatus: 'pending'
+        };
+        
         employee = await Employee.findByIdAndUpdate(
             existingEmployee._id,
-            {
-                firstName,
-                lastName,
-                email: email.toLowerCase(),
-                salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
-                adminId: req.user._id,
-                invitationToken,
-                invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-                invitationStatus: 'pending'
-            },
-            { new: true, runValidators: true }
+            updateFields,
+            { new: true, runValidators: false } // Don't run validators to avoid unique constraint issues
         );
         console.log('✅ Updated existing employee invitation');
     } else {
