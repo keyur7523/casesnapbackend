@@ -70,7 +70,11 @@ const EmployeeSchema = new mongoose.Schema({
         match: [/^\d{12}$/, 'Aadhar card number must be 12 digits'],
         unique: true,
         sparse: true, // Allows null values but ensures uniqueness when present
-        default: undefined // Explicitly set to undefined instead of null
+        default: undefined, // Explicitly set to undefined instead of null
+        set: function(value) {
+            // Ensure null values are converted to undefined
+            return value === null ? undefined : value;
+        }
     },
     
     // Employment Information

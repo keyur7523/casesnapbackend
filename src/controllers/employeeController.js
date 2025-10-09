@@ -116,7 +116,35 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
         
         // Handle specific MongoDB errors
         if (error.message.includes('aadharCardNumber')) {
-            return next(new ErrorResponse('There seems to be a data conflict. Please contact support or try with a different email address.', 400));
+            // Try to fix the Aadhar conflict even when no existing employee is found
+            console.log('🔧 Attempting to fix Aadhar conflict (no existing employee found)...');
+            try {
+                // Check if there's actually an employee with this email but not in our organization
+                const anyEmployee = await Employee.findOne({ email: email.toLowerCase() });
+                
+                if (anyEmployee) {
+                    console.log('🔍 Found employee in different organization:', anyEmployee.organization);
+                    return next(new ErrorResponse('An employee with this email already exists in another organization.', 400));
+                }
+                
+                // If no employee found anywhere, try creating with explicit undefined
+                console.log('🔧 Creating employee with explicit undefined Aadhar...');
+                employee = await Employee.create({
+                    firstName,
+                    lastName,
+                    email: email.toLowerCase(),
+                    salary: salary || 0,
+                    adminId: req.user._id,
+                    organization: organizationId,
+                    invitationToken,
+                    invitationStatus: 'pending',
+                    aadharCardNumber: undefined
+                });
+                console.log('✅ Successfully created employee after fixing Aadhar conflict');
+            } catch (fixError) {
+                console.error('❌ Failed to fix Aadhar conflict:', fixError.message);
+                return next(new ErrorResponse('There seems to be a data conflict. Please try with a different email address.', 400));
+            }
         }
         
         // Handle duplicate key errors
