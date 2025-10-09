@@ -41,11 +41,26 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
         organization: organizationId 
     });
 
+    console.log('🔍 Existing employee check:', existingEmployee ? {
+        id: existingEmployee._id,
+        email: existingEmployee.email,
+        invitationStatus: existingEmployee.invitationStatus,
+        status: existingEmployee.status,
+        hasAadhar: !!existingEmployee.aadharCardNumber,
+        aadharValue: existingEmployee.aadharCardNumber
+    } : 'No existing employee found');
+
     if (existingEmployee) {
         if (existingEmployee.invitationStatus === 'completed') {
             return next(new ErrorResponse('An employee with this email already exists in your organization', 400));
         } else if (existingEmployee.invitationStatus === 'pending') {
             return next(new ErrorResponse('An invitation has already been sent to this email address', 400));
+        } else if (existingEmployee.invitationStatus === 'expired') {
+            // Allow re-inviting expired invitations
+            console.log('🔄 Re-inviting expired employee invitation');
+        } else {
+            // Handle any other status - treat as existing employee
+            console.log('🔄 Re-inviting employee with status:', existingEmployee.invitationStatus);
         }
     }
 
@@ -60,39 +75,61 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
 
     // Create or update employee record
     let employee;
-    if (existingEmployee) {
-        // Update existing pending invitation - only update invitation-related fields
-        // Don't update fields that might already have values (like aadharCardNumber)
-        const updateFields = {
-            firstName,
-            lastName,
-            email: email.toLowerCase(),
-            salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
-            adminId: req.user._id,
-            invitationToken,
-            invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-            invitationStatus: 'pending'
-        };
+    try {
+        if (existingEmployee) {
+            // Always update existing employee - only update invitation-related fields
+            // Don't update fields that might already have values (like aadharCardNumber)
+            const updateFields = {
+                firstName,
+                lastName,
+                email: email.toLowerCase(),
+                salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
+                adminId: req.user._id,
+                invitationToken,
+                invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+                invitationStatus: 'pending'
+            };
+            
+            employee = await Employee.findByIdAndUpdate(
+                existingEmployee._id,
+                updateFields,
+                { new: true, runValidators: false } // Don't run validators to avoid unique constraint issues
+            );
+            console.log('✅ Updated existing employee invitation');
+        } else {
+            // Create new employee record - explicitly set aadharCardNumber to undefined
+            employee = await Employee.create({
+                firstName,
+                lastName,
+                email: email.toLowerCase(),
+                salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
+                adminId: req.user._id,
+                organization: organizationId,
+                invitationToken,
+                invitationStatus: 'pending',
+                aadharCardNumber: undefined // Explicitly set to undefined to avoid null issues
+            });
+            console.log('✅ Created new employee invitation');
+        }
+    } catch (error) {
+        console.error('❌ Error creating/updating employee:', error.message);
         
-        employee = await Employee.findByIdAndUpdate(
-            existingEmployee._id,
-            updateFields,
-            { new: true, runValidators: false } // Don't run validators to avoid unique constraint issues
-        );
-        console.log('✅ Updated existing employee invitation');
-    } else {
-        // Create new employee record
-        employee = await Employee.create({
-            firstName,
-            lastName,
-            email: email.toLowerCase(),
-            salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
-            adminId: req.user._id,
-            organization: organizationId,
-            invitationToken,
-            invitationStatus: 'pending'
-        });
-        console.log('✅ Created new employee invitation');
+        // Handle specific MongoDB errors
+        if (error.message.includes('aadharCardNumber')) {
+            return next(new ErrorResponse('There seems to be a data conflict. Please contact support or try with a different email address.', 400));
+        }
+        
+        // Handle duplicate key errors
+        if (error.code === 11000) {
+            const field = Object.keys(error.keyPattern)[0];
+            if (field === 'aadharCardNumber') {
+                return next(new ErrorResponse('There is a data conflict with employee records. Please contact support to resolve this issue.', 400));
+            }
+            return next(new ErrorResponse(`An employee with this ${field} already exists. Please use a different ${field}.`, 400));
+        }
+        
+        // Generic error
+        return next(new ErrorResponse('Failed to create employee invitation. Please try again.', 500));
     }
 
     // Generate invitation link with required data
