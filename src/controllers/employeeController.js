@@ -19,14 +19,20 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     console.log('👤 Employee data:', { firstName, lastName, email, salary });
     console.log('🏢 Organization ID:', organizationId);
 
-    // Validate required fields
-    if (!firstName || !lastName || !email || !salary) {
-        return next(new ErrorResponse('First name, last name, email, and salary are required', 400));
+    // Validate required fields (only email, firstName, lastName required now)
+    if (!email) {
+        return next(new ErrorResponse('Email is required', 400));
     }
 
-    // Validate salary is a valid number
-    if (isNaN(salary) || salary < 0) {
-        return next(new ErrorResponse('Salary must be a valid positive number', 400));
+    if (!firstName || !lastName) {
+        return next(new ErrorResponse('First name and last name are required', 400));
+    }
+
+    // Validate salary if provided
+    if (salary !== undefined && salary !== null && salary !== '') {
+        if (isNaN(salary) || salary < 0) {
+            return next(new ErrorResponse('Salary must be a valid positive number', 400));
+        }
     }
 
     // Check if employee already exists
@@ -62,7 +68,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
                 firstName,
                 lastName,
                 email: email.toLowerCase(),
-                salary,
+                salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
                 adminId: req.user._id,
                 invitationToken,
                 invitationExpires: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
@@ -77,7 +83,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
             firstName,
             lastName,
             email: email.toLowerCase(),
-            salary,
+            salary: salary || 0, // Default to 0 if not provided (will be filled during registration)
             adminId: req.user._id,
             organization: organizationId,
             invitationToken,
@@ -86,8 +92,13 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
         console.log('✅ Created new employee invitation');
     }
 
-    // Generate invitation link with all required data
-    const invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&adminId=${req.user._id}&employeeEmail=${encodeURIComponent(email)}&salary=${salary}`;
+    // Generate invitation link with required data
+    let invitationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/employees/register?token=${invitationToken}&employeeName=${encodeURIComponent(firstName + ' ' + lastName)}&organizationName=${encodeURIComponent(organization.companyName)}&adminName=${encodeURIComponent(req.user.firstName + ' ' + req.user.lastName)}&adminId=${req.user._id}&employeeEmail=${encodeURIComponent(email)}`;
+    
+    // Add salary to link only if provided
+    if (salary && salary > 0) {
+        invitationLink += `&salary=${salary}`;
+    }
     
     console.log('🔗 Invitation link generated:', invitationLink);
     console.log('🔑 Invitation token:', invitationToken);
@@ -355,10 +366,10 @@ exports.registerEmployee = asyncHandler(async (req, res, next) => {
     console.log('👨‍💼 Admin ID:', adminId);
     console.log('🏢 Organization ID:', organizationId);
 
-    // Validate required fields
+    // Validate required fields (salary is optional - can be set by admin later)
     const requiredFields = [
         'firstName', 'lastName', 'email', 'phone', 'address', 'gender', 
-        'dateOfBirth', 'age', 'aadharCardNumber', 'employeeType', 'salary', 
+        'dateOfBirth', 'age', 'aadharCardNumber', 'employeeType', 
         'department', 'position', 'startDate', 'emergencyContactName', 
         'emergencyContactPhone', 'emergencyContactRelation', 'password', 'confirmPassword'
     ];
@@ -366,6 +377,13 @@ exports.registerEmployee = asyncHandler(async (req, res, next) => {
     const missingFields = requiredFields.filter(field => !req.body[field]);
     if (missingFields.length > 0) {
         return next(new ErrorResponse(`Missing required fields: ${missingFields.join(', ')}`, 400));
+    }
+
+    // Validate salary if provided
+    if (salary !== undefined && salary !== null && salary !== '') {
+        if (isNaN(salary) || salary < 0) {
+            return next(new ErrorResponse('Salary must be a valid positive number', 400));
+        }
     }
 
     // Validate password confirmation
@@ -446,6 +464,11 @@ exports.registerEmployee = asyncHandler(async (req, res, next) => {
     existingEmployee.invitationStatus = 'completed';
     existingEmployee.status = 'pending';
     existingEmployee.invitationToken = undefined; // Remove token after completion
+    
+    // Update salary only if provided (optional field - admin can set later)
+    if (salary !== undefined && salary !== null && salary !== '') {
+        existingEmployee.salary = salary;
+    }
 
     // Add conditional fields based on employee type
     if (employeeType === 'advocate') {

@@ -95,7 +95,8 @@ const EmployeeSchema = new mongoose.Schema({
     },
     salary: {
         type: Number,
-        required: [true, 'Salary is required'],
+        required: false, // Optional - can be set by admin later
+        default: 0,
         min: [0, 'Salary cannot be negative']
     },
     department: {
