@@ -36,6 +36,7 @@ router.post('/:id/status', protect, authorize('admin'), updateEmployeeStatus);
 
 // Admin-only employee management routes
 router.get('/admin/all', protect, authorize('admin'), getEmployeesForAdmin);
+router.get('/admin/:id', protect, authorize('admin'), getEmployee);
 router.put('/admin/:id', protect, authorize('admin'), updateEmployeeByAdmin);
 router.delete('/admin/:id', protect, authorize('admin'), softDeleteEmployeeByAdmin);
 router.put('/admin/:id/restore', protect, authorize('admin'), restoreEmployeeByAdmin);
