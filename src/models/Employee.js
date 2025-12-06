@@ -144,7 +144,8 @@ const EmployeeSchema = new mongoose.Schema({
     password: {
         type: String,
         required: false, // Only required during full registration
-        minlength: [6, 'Password must be at least 6 characters']
+        minlength: [6, 'Password must be at least 6 characters'],
+        select: false // Don't include password in queries by default
     },
     
     // Organization Reference
@@ -257,22 +258,32 @@ EmployeeSchema.index({ organization: 1, email: 1 });
 // Hash password before saving
 EmployeeSchema.pre('save', async function(next) {
     // Only hash the password if it has been modified (or is new) and is not empty
-    if (!this.isModified('password') || !this.password) {
+    // Check if password exists and is a non-empty string
+    if (!this.isModified('password')) {
         return next();
     }
-
-    try {
-        // Hash password with cost of 12
-        const salt = await bcrypt.genSalt(12);
-        this.password = await bcrypt.hash(this.password, salt);
+    
+    // If password is being set/updated, hash it
+    if (this.password && typeof this.password === 'string' && this.password.length > 0) {
+        try {
+            // Hash password with cost of 12
+            const salt = await bcrypt.genSalt(12);
+            this.password = await bcrypt.hash(this.password, salt);
+            next();
+        } catch (error) {
+            next(error);
+        }
+    } else {
+        // Password is being removed or set to empty, just continue
         next();
-    } catch (error) {
-        next(error);
     }
 });
 
 // Match password method
 EmployeeSchema.methods.matchPassword = async function(enteredPassword) {
+    if (!this.password) {
+        return false;
+    }
     return await bcrypt.compare(enteredPassword, this.password);
 };
 

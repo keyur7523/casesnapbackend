@@ -314,15 +314,28 @@ exports.getEmployeeByToken = asyncHandler(async (req, res, next) => {
 // @access    Public
 exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
     const { token } = req.params;
-    const { phone, address, gender, dateOfBirth } = req.body;
+    const { phone, address, gender, dateOfBirth, password, confirmPassword } = req.body;
 
     console.log('📝 Completing employee registration...');
     console.log('🔑 Token:', token);
-    console.log('📋 Registration data:', { phone, address, gender, dateOfBirth });
+    console.log('📋 Registration data:', { phone, address, gender, dateOfBirth, hasPassword: !!password });
 
     // Validate required fields for completion
     if (!phone || !address || !gender || !dateOfBirth) {
         return next(new ErrorResponse('Phone, address, gender, and date of birth are required to complete registration', 400));
+    }
+
+    // Password is required for registration completion
+    if (!password || !confirmPassword) {
+        return next(new ErrorResponse('Password and confirm password are required to complete registration', 400));
+    }
+
+    // Validate password
+    if (password !== confirmPassword) {
+        return next(new ErrorResponse('Password and confirm password do not match', 400));
+    }
+    if (password.length < 6) {
+        return next(new ErrorResponse('Password must be at least 6 characters long', 400));
     }
 
     // Find employee by token
@@ -349,14 +362,25 @@ exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
     employee.dateOfBirth = new Date(dateOfBirth);
     employee.invitationStatus = 'completed';
     employee.invitationToken = undefined; // Remove token after completion
+    
+    // Set password (will be hashed by pre-save middleware)
+    employee.password = password;
+    
+    // Note: Status remains 'pending' until admin activates the account
 
+    console.log('💾 Saving employee with password...');
     await employee.save();
+    console.log('✅ Employee saved successfully');
 
+    // Verify password was saved by querying the employee with password field
+    const savedEmployee = await Employee.findById(employee._id).select('+password');
     console.log('✅ Employee registration completed:', {
-        id: employee._id,
-        name: `${employee.firstName} ${employee.lastName}`,
-        email: employee.email,
-        organization: employee.organization.companyName
+        id: savedEmployee._id,
+        name: `${savedEmployee.firstName} ${savedEmployee.lastName}`,
+        email: savedEmployee.email,
+        organization: savedEmployee.organization.companyName,
+        passwordSet: !!savedEmployee.password,
+        status: savedEmployee.status
     });
 
     res.status(200).json({

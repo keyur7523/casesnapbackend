@@ -84,6 +84,9 @@ UserSchema.methods.getSignedJwtToken = function() {
 
 // Method to compare entered password with hashed password in DB
 UserSchema.methods.matchPassword = async function(enteredPassword) {
+    if (!this.password) {
+        return false;
+    }
     return await bcrypt.compare(enteredPassword, this.password);
 };
 

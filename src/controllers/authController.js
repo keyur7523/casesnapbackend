@@ -33,21 +33,26 @@ exports.login = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Invalid credentials', 401));
     }
 
-    // 4. Check if password matches
+    // 4. Check if password is set (for employees who haven't completed registration)
+    if (!user.password) {
+        return next(new ErrorResponse('Password not set. Please complete your registration.', 401));
+    }
+
+    // 5. Check if password matches
     const isMatch = await user.matchPassword(password);
 
     if (!isMatch) {
         return next(new ErrorResponse('Invalid credentials', 401));
     }
 
-    // 5. Check if employee is active (only for employees)
+    // 6. Check if employee is active (only for employees)
     if (userType === 'employee') {
         if (user.status !== 'active') {
-            return next(new ErrorResponse('Your account is not active. Please contact your administrator.', 401));
+            return next(new ErrorResponse('User is not active', 401));
         }
     }
 
-    // 6. Create token with appropriate role
+    // 7. Create token with appropriate role
     const token = jwt.sign(
         { 
             id: user._id,
@@ -61,7 +66,7 @@ exports.login = asyncHandler(async (req, res, next) => {
 
     console.log('✅ Login successful for:', userType, user.email);
 
-    // 7. Send response with token and user data
+    // 8. Send response with token and user data
     if (userType === 'employee') {
         res.status(200).json({
             success: true,
