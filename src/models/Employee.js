@@ -148,6 +148,13 @@ const EmployeeSchema = new mongoose.Schema({
         select: false // Don't include password in queries by default
     },
     
+    // Role field (always 'employee' for employees, but stored for filtering)
+    role: {
+        type: String,
+        enum: ['employee', 'admin', 'super-admin'],
+        default: 'employee'
+    },
+    
     // Organization Reference
     organization: {
         type: mongoose.Schema.ObjectId,

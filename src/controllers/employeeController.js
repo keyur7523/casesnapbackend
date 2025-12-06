@@ -107,6 +107,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
                 organization: organizationId,
                 invitationToken,
                 invitationStatus: 'pending',
+                role: 'employee', // All employees have role 'employee'
                 aadharCardNumber: undefined // Explicitly set to undefined to avoid null issues
             });
             console.log('✅ Created new employee invitation');
@@ -314,11 +315,41 @@ exports.getEmployeeByToken = asyncHandler(async (req, res, next) => {
 // @access    Public
 exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
     const { token } = req.params;
-    const { phone, address, gender, dateOfBirth, password, confirmPassword } = req.body;
+    const { 
+        phone, 
+        address, 
+        gender, 
+        dateOfBirth,
+        age,
+        aadharCardNumber,
+        employeeType,
+        advocateLicenseNumber,
+        internYear,
+        department,
+        position,
+        startDate,
+        emergencyContactName,
+        emergencyContactPhone,
+        emergencyContactRelation,
+        role,
+        password, 
+        confirmPassword 
+    } = req.body;
 
     console.log('📝 Completing employee registration...');
     console.log('🔑 Token:', token);
-    console.log('📋 Registration data:', { phone, address, gender, dateOfBirth, hasPassword: !!password });
+    console.log('📋 Registration data received:', { 
+        phone, 
+        address, 
+        gender, 
+        dateOfBirth,
+        age,
+        hasAadhar: !!aadharCardNumber,
+        employeeType,
+        department,
+        position,
+        hasPassword: !!password 
+    });
 
     // Validate required fields for completion
     if (!phone || !address || !gender || !dateOfBirth) {
@@ -355,31 +386,74 @@ exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Invitation link has expired', 400));
     }
 
-    // Update employee with registration details
+    // Update employee with all registration details
     employee.phone = phone;
     employee.address = address;
     employee.gender = gender;
     employee.dateOfBirth = new Date(dateOfBirth);
+    
+    // Set optional fields if provided
+    if (age !== undefined && age !== null) {
+        employee.age = age;
+    }
+    if (aadharCardNumber !== undefined && aadharCardNumber !== null && aadharCardNumber !== '') {
+        employee.aadharCardNumber = aadharCardNumber;
+    }
+    if (employeeType) {
+        employee.employeeType = employeeType;
+    }
+    if (advocateLicenseNumber) {
+        employee.advocateLicenseNumber = advocateLicenseNumber;
+    }
+    if (internYear !== undefined && internYear !== null) {
+        employee.internYear = internYear;
+    }
+    if (department) {
+        employee.department = department;
+    }
+    if (position) {
+        employee.position = position;
+    }
+    if (startDate) {
+        employee.startDate = new Date(startDate);
+    }
+    if (emergencyContactName) {
+        employee.emergencyContactName = emergencyContactName;
+    }
+    if (emergencyContactPhone) {
+        employee.emergencyContactPhone = emergencyContactPhone;
+    }
+    if (emergencyContactRelation) {
+        employee.emergencyContactRelation = emergencyContactRelation;
+    }
+    
     employee.invitationStatus = 'completed';
     employee.invitationToken = undefined; // Remove token after completion
+    
+    // Set role (default to 'employee' if not provided)
+    employee.role = role || 'employee';
     
     // Set password (will be hashed by pre-save middleware)
     employee.password = password;
     
     // Note: Status remains 'pending' until admin activates the account
 
-    console.log('💾 Saving employee with password...');
+    console.log('💾 Saving employee with all registration data...');
     await employee.save();
     console.log('✅ Employee saved successfully');
 
-    // Verify password was saved by querying the employee with password field
-    const savedEmployee = await Employee.findById(employee._id).select('+password');
+    // Reload employee to get all saved fields
+    const savedEmployee = await Employee.findById(employee._id)
+        .populate('organization')
+        .populate('adminId', 'firstName lastName email');
+    
     console.log('✅ Employee registration completed:', {
         id: savedEmployee._id,
         name: `${savedEmployee.firstName} ${savedEmployee.lastName}`,
         email: savedEmployee.email,
-        organization: savedEmployee.organization.companyName,
-        passwordSet: !!savedEmployee.password,
+        employeeType: savedEmployee.employeeType,
+        department: savedEmployee.department,
+        position: savedEmployee.position,
         status: savedEmployee.status
     });
 
@@ -388,16 +462,33 @@ exports.completeEmployeeRegistration = asyncHandler(async (req, res, next) => {
         message: 'Employee registration completed successfully',
         data: {
             employee: {
-                id: employee._id,
-                firstName: employee.firstName,
-                lastName: employee.lastName,
-                email: employee.email,
-                phone: employee.phone,
-                address: employee.address,
-                gender: employee.gender,
-                dateOfBirth: employee.dateOfBirth,
-                salary: employee.salary,
-                organization: employee.organization
+                id: savedEmployee._id,
+                firstName: savedEmployee.firstName,
+                lastName: savedEmployee.lastName,
+                email: savedEmployee.email,
+                phone: savedEmployee.phone,
+                address: savedEmployee.address,
+                gender: savedEmployee.gender,
+                dateOfBirth: savedEmployee.dateOfBirth,
+                age: savedEmployee.age,
+                aadharCardNumber: savedEmployee.aadharCardNumber,
+                employeeType: savedEmployee.employeeType,
+                type: savedEmployee.employeeType, // Alias for frontend compatibility
+                advocateLicenseNumber: savedEmployee.advocateLicenseNumber,
+                internYear: savedEmployee.internYear,
+                salary: savedEmployee.salary,
+                department: savedEmployee.department,
+                position: savedEmployee.position,
+                startDate: savedEmployee.startDate,
+                emergencyContactName: savedEmployee.emergencyContactName,
+                emergencyContactPhone: savedEmployee.emergencyContactPhone,
+                emergencyContactRelation: savedEmployee.emergencyContactRelation,
+                organization: savedEmployee.organization,
+                adminId: savedEmployee.adminId,
+                status: savedEmployee.status,
+                invitationStatus: savedEmployee.invitationStatus,
+                createdAt: savedEmployee.createdAt,
+                updatedAt: savedEmployee.updatedAt
             }
         }
     });
@@ -787,6 +878,9 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
         includeDeleted = false,
         includeArchived = false,
         status, 
+        role, // Filter by employeeType (role)
+        department, // Filter by department
+        type, // Filter by employeeType (type)
         search,
         page = 1,
         limit = 10,
@@ -799,6 +893,9 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
     console.log('🔍 Include deleted:', includeDeleted);
     console.log('📦 Include archived:', includeArchived);
     console.log('📊 Status filter:', status);
+    console.log('👤 Role filter:', role);
+    console.log('🏢 Department filter:', department);
+    console.log('📋 Type filter:', type);
     console.log('🔎 Search term:', search);
     console.log('📄 Page:', page, 'Limit:', limit);
     console.log('🔄 Sort by:', sortBy, 'Order:', sortOrder);
@@ -846,23 +943,90 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
     }
 
     // Filter by status if provided
-    if (status) {
+    if (status && status !== 'all') {
         const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
         if (!validStatuses.includes(status)) {
-            return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}`, 400));
+            return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}, or 'all'`, 400));
         }
         query.status = status;
     }
 
-    // Search functionality
+    // Filter by role if provided
+    // If role is 'super-admin' or 'admin', return no employees (employees are always 'employee' role)
+    if (role && role !== 'all') {
+        if (role === 'super-admin' || role === 'admin') {
+            // Return empty result immediately - no employees match these roles
+            return res.status(200).json({
+                success: true,
+                count: 0,
+                totalCount: 0,
+                totalPages: 0,
+                currentPage: pageNum,
+                hasNextPage: false,
+                hasPrevPage: false,
+                nextPage: null,
+                prevPage: null,
+                data: [],
+                filters: {
+                    includeDeleted: includeDeleted === 'true',
+                    includeArchived: includeArchived === 'true',
+                    status: status || 'all',
+                    role: role,
+                    department: department || 'all',
+                    type: type || 'all',
+                    search: search || null
+                },
+                pagination: {
+                    page: pageNum,
+                    limit: limitNum,
+                    sortBy: sortBy,
+                    sortOrder: sortOrder
+                }
+            });
+        } else if (role === 'employee') {
+            // Filter for employees only (role = 'employee' or role doesn't exist for backward compatibility)
+            query.$or = [
+                { role: 'employee' },
+                { role: { $exists: false } } // Include old records without role field
+            ];
+        }
+        // If invalid role, ignore it
+    }
+    
+    // Filter by type/employeeType if provided (separate from role filter)
+    if (type && type !== 'all') {
+        const validTypes = ['advocate', 'intern', 'staff', 'other'];
+        if (validTypes.includes(type)) {
+            query.employeeType = type;
+        }
+    }
+
+    // Filter by department if provided
+    if (department && department !== 'all') {
+        query.department = { $regex: department, $options: 'i' };
+    }
+
+    // Search functionality - only search by employee name (firstName and lastName)
     if (search) {
-        query.$or = [
-            { firstName: { $regex: search, $options: 'i' } },
-            { lastName: { $regex: search, $options: 'i' } },
-            { email: { $regex: search, $options: 'i' } },
-            { department: { $regex: search, $options: 'i' } },
-            { position: { $regex: search, $options: 'i' } }
-        ];
+        // If we already have $or from role filter, we need to combine them
+        if (query.$or) {
+            // We have role filter $or, need to add search $or
+            // Combine both conditions with $and
+            const roleCondition = query.$or;
+            delete query.$or;
+            query.$and = [
+                { $or: roleCondition },
+                { $or: [
+                    { firstName: { $regex: search, $options: 'i' } },
+                    { lastName: { $regex: search, $options: 'i' } }
+                ]}
+            ];
+        } else {
+            query.$or = [
+                { firstName: { $regex: search, $options: 'i' } },
+                { lastName: { $regex: search, $options: 'i' } }
+            ];
+        }
     }
 
     // Calculate pagination
@@ -920,6 +1084,17 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
         }
     }
 
+    // Map employees to ensure type (employeeType), department, and position are included
+    const employeesWithFields = employees.map(emp => {
+        const empObj = emp.toObject();
+        return {
+            ...empObj,
+            type: empObj.employeeType || null, // Map employeeType to type
+            department: empObj.department || null,
+            position: empObj.position || null
+        };
+    });
+
     res.status(200).json({
         success: true,
         count: employees.length,
@@ -930,11 +1105,14 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
         hasPrevPage: pageNum > 1,
         nextPage: pageNum < totalPages ? pageNum + 1 : null,
         prevPage: pageNum > 1 ? pageNum - 1 : null,
-        data: employees,
+        data: employeesWithFields,
         filters: {
             includeDeleted: includeDeleted === 'true',
             includeArchived: includeArchived === 'true',
             status: status || 'all',
+            role: role || 'all',
+            department: department || 'all',
+            type: type || 'all',
             search: search || null
         },
         pagination: {
