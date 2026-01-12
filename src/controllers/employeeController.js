@@ -5,7 +5,7 @@ const Organization = require('../models/Organization');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const crypto = require('crypto');
-const { sendEmployeeInvitation } = require('../utils/emailService');
+const { sendEmployeeInvitation } = require('../utils/gmailService');
 const jwt = require('jsonwebtoken');
 
 // @desc      Send employee invitation
@@ -201,7 +201,7 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     console.log('🔑 Invitation token:', invitationToken);
     console.log('📧 Employee email:', email);
 
-    // Send email with invitation link using SMTP
+    // Send email with invitation link using Gmail SMTP
     const emailResult = await sendEmployeeInvitation({
         to: email,
         firstName,
@@ -213,9 +213,28 @@ exports.sendEmployeeInvitation = asyncHandler(async (req, res, next) => {
     });
 
     if (emailResult.success) {
-        console.log('✅ Email sent successfully via SMTP');
+        console.log('✅ Email sent successfully via Gmail SMTP');
     } else {
-        console.log('⚠️ Email sending failed:', emailResult.message || emailResult.error);
+        console.error('❌ Email sending failed!');
+        console.error('   Error:', emailResult.message || emailResult.error);
+        console.error('   Error Code:', emailResult.errorCode || emailResult.error || 'UNKNOWN');
+        
+        // Provide user-friendly error message based on error code
+        if (emailResult.errorCode === 'GMAIL_NOT_CONFIGURED') {
+            console.error('   ⚠️ Gmail credentials not configured.');
+            console.error('   → Add GMAIL_EMAIL=your_email@gmail.com to .env file');
+            console.error('   → Add GMAIL_APP_PASSWORD=your_app_password to .env file');
+            console.error('   → Get App Password: https://myaccount.google.com/apppasswords');
+        } else if (emailResult.errorCode === 'GMAIL_ERROR') {
+            console.error('   ⚠️ Gmail sending error.');
+            console.error('   → Check your Gmail App Password is correct');
+            console.error('   → Make sure 2-Step Verification is enabled');
+            console.error('   → Verify daily sending limit (500 emails/day for free accounts)');
+        }
+        
+        // Still return success to user, but log the error
+        // This allows the invitation link to be generated even if email fails
+        // The admin can manually send the link if needed
     }
 
     res.status(201).json({
@@ -942,13 +961,29 @@ exports.getEmployeesForAdmin = asyncHandler(async (req, res, next) => {
         query.employmentStatus = 'employed';
     }
 
-    // Filter by status if provided
+    // Filter by status if provided (supports single status or comma-separated multiple statuses)
     if (status && status !== 'all') {
         const validStatuses = ['pending', 'active', 'inactive', 'terminated'];
-        if (!validStatuses.includes(status)) {
-            return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}, or 'all'`, 400));
+        
+        // Check if multiple statuses are provided (comma-separated)
+        const statusArray = status.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        
+        if (statusArray.length === 1) {
+            // Single status
+            const singleStatus = statusArray[0];
+            if (!validStatuses.includes(singleStatus)) {
+                return next(new ErrorResponse(`Invalid status. Must be one of: ${validStatuses.join(', ')}, or 'all'`, 400));
+            }
+            query.status = singleStatus;
+        } else if (statusArray.length > 1) {
+            // Multiple statuses - use $in operator
+            const invalidStatuses = statusArray.filter(s => !validStatuses.includes(s));
+            if (invalidStatuses.length > 0) {
+                return next(new ErrorResponse(`Invalid status(es): ${invalidStatuses.join(', ')}. Must be one of: ${validStatuses.join(', ')}`, 400));
+            }
+            query.status = { $in: statusArray };
+            console.log('📊 Multiple status filter:', statusArray);
         }
-        query.status = status;
     }
 
     // Filter by role if provided

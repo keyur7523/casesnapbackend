@@ -1,23 +1,36 @@
-// utils/emailService.js
+// utils/gmailService.js
+// Gmail SMTP service using nodemailer
 
-const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
 
-// Initialize SendGrid
+// Initialize Gmail transporter
 const initializeEmailService = () => {
     try {
-        const apiKey = process.env.SENDGRID_API_KEY;
-        
-        if (!apiKey) {
-            console.log('⚠️ SENDGRID_API_KEY not found in environment variables');
+        // Check if Gmail credentials are configured
+        const email = process.env.GMAIL_EMAIL || process.env.GMAIL_USER;
+        const password = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD;
+
+        if (!email || !password) {
+            console.log('⚠️ Gmail credentials not found in environment variables');
             console.log('📧 Email service will not send emails. Invitation links will still be generated.');
+            console.log('📋 Required env vars: GMAIL_EMAIL and GMAIL_APP_PASSWORD');
             return false;
         }
 
-        sgMail.setApiKey(apiKey);
-        console.log('✅ SendGrid email service initialized');
-        return true;
+        // Create transporter
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: email,
+                pass: password
+            }
+        });
+
+        console.log('✅ Gmail SMTP service initialized');
+        console.log('📧 Sender email:', email);
+        return transporter;
     } catch (error) {
-        console.error('❌ Email service initialization failed:', error.message);
+        console.error('❌ Gmail service initialization failed:', error.message);
         return false;
     }
 };
@@ -26,31 +39,53 @@ const initializeEmailService = () => {
 const sendEmployeeInvitation = async (emailData) => {
     const { to, firstName, lastName, organizationName, companyEmail, adminName, invitationLink } = emailData;
 
-    // Check if SendGrid is configured
-    if (!process.env.SENDGRID_API_KEY) {
-        console.error('❌ SendGrid API key not configured!');
+    // Get Gmail credentials
+    const fromEmail = process.env.GMAIL_EMAIL || process.env.GMAIL_USER || 'casesnap2025@gmail.com';
+    const password = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD;
+
+    // Check if Gmail is configured
+    if (!fromEmail || !password) {
+        console.error('❌ Gmail credentials not configured!');
         console.error('📧 Email would be sent to:', to);
         console.error('🔗 Invitation link:', invitationLink);
         console.error('⚠️ To fix this issue:');
-        console.error('   1. Sign up for SendGrid at https://sendgrid.com');
-        console.error('   2. Create an API key in SendGrid dashboard');
-        console.error('   3. Add SENDGRID_API_KEY=your_api_key to your .env file');
-        console.error('   4. Optionally add SENDGRID_FROM_EMAIL=your_verified_email@domain.com');
+        console.error('   1. Enable 2-Step Verification on your Gmail account');
+        console.error('   2. Generate an App Password: https://myaccount.google.com/apppasswords');
+        console.error('   3. Add GMAIL_EMAIL=your_email@gmail.com to your .env file');
+        console.error('   4. Add GMAIL_APP_PASSWORD=your_app_password to your .env file');
         return { 
             success: false, 
-            message: 'Email service not configured. SENDGRID_API_KEY is missing in environment variables.',
-            error: 'SENDGRID_API_KEY_NOT_FOUND'
+            message: 'Gmail service not configured. GMAIL_EMAIL and GMAIL_APP_PASSWORD are required.',
+            error: 'GMAIL_NOT_CONFIGURED'
         };
     }
 
-    const fromEmail = process.env.SENDGRID_FROM_EMAIL || process.env.SMTP_FROM || 'noreply@casesnap.com';
+    // Create transporter
+    let transporter;
+    try {
+        transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: fromEmail,
+                pass: password
+            }
+        });
+    } catch (error) {
+        console.error('❌ Failed to create Gmail transporter:', error.message);
+        return { 
+            success: false, 
+            error: error.message,
+            errorCode: 'TRANSPORTER_ERROR'
+        };
+    }
 
-    const msg = {
-        to: to,
+    // Email content
+    const mailOptions = {
         from: {
-            email: fromEmail,
-            name: organizationName
+            name: organizationName,
+            address: fromEmail
         },
+        to: to,
         subject: `Invitation to join ${organizationName}`,
         html: `
             <div style="font-family: system-ui, sans-serif, Arial; font-size: 16px; background-color: #f8fafc; color: #0f172a; padding: 20px;">
@@ -144,98 +179,65 @@ The ${organizationName} Team
     };
 
     try {
-        console.log('📤 Attempting to send email via SendGrid...');
+        console.log('📤 Attempting to send email via Gmail SMTP...');
         console.log('📧 To:', to);
         console.log('📧 From:', fromEmail);
         console.log('📧 Subject:', `Invitation to join ${organizationName}`);
         
-        const response = await sgMail.send(msg);
-        console.log('✅ Email sent successfully via SendGrid');
+        const info = await transporter.sendMail(mailOptions);
+        console.log('✅ Email sent successfully via Gmail SMTP');
         console.log('📧 Sent to:', to);
-        console.log('📨 Message ID:', response[0].headers['x-message-id']);
-        return { success: true, messageId: response[0].headers['x-message-id'] };
+        console.log('📨 Message ID:', info.messageId);
+        return { success: true, messageId: info.messageId };
     } catch (error) {
-        console.error('❌ SendGrid email sending failed!');
+        console.error('❌ Gmail SMTP email sending failed!');
         console.error('📧 Error message:', error.message);
         console.error('📧 Recipient email:', to);
         
-        if (error.response) {
-            console.error('📧 SendGrid Error Status:', error.response.statusCode);
-            console.error('📧 SendGrid Error Body:', JSON.stringify(error.response.body, null, 2));
-            
-            // Common SendGrid errors with helpful messages
-            if (error.response.body && error.response.body.errors) {
-                error.response.body.errors.forEach((err, index) => {
-                    console.error(`   Error ${index + 1}:`, err.message);
-                    if (err.field) {
-                        console.error(`   Field:`, err.field);
-                    }
-                    
-                    // Provide specific guidance for common errors
-                    if (err.message && err.message.toLowerCase().includes('credits')) {
-                        console.error('   💡 Solution: Your SendGrid account has exceeded its credit limit.');
-                        console.error('      → Free tier: 100 emails/day');
-                        console.error('      → Check SendGrid dashboard → Billing → Usage');
-                        console.error('      → Upgrade plan or wait until credits reset');
-                    }
-                    
-                    if (err.message && err.message.toLowerCase().includes('unauthorized')) {
-                        console.error('   💡 Solution: API key may be invalid or lack permissions.');
-                        console.error('      → Check API key in SendGrid dashboard → Settings → API Keys');
-                        console.error('      → Ensure API key has "Mail Send" permission');
-                        console.error('      → Regenerate API key if needed');
-                    }
-                    
-                    if (err.message && err.message.toLowerCase().includes('sender')) {
-                        console.error('   💡 Solution: Sender email is not verified.');
-                        console.error('      → Go to SendGrid → Settings → Sender Authentication');
-                        console.error('      → Verify your sender email address');
-                    }
-                });
-            }
-        }
-        
-        // Extract error details for better error reporting
-        let errorMessage = error.message;
-        let errorCode = 'SENDGRID_ERROR';
-        
-        if (error.response?.body?.errors && error.response.body.errors.length > 0) {
-            const firstError = error.response.body.errors[0];
-            errorMessage = firstError.message || errorMessage;
-            
-            // Set specific error codes
-            if (errorMessage.toLowerCase().includes('credits')) {
-                errorCode = 'CREDITS_EXCEEDED';
-            } else if (errorMessage.toLowerCase().includes('unauthorized')) {
-                errorCode = 'UNAUTHORIZED';
-            } else if (errorMessage.toLowerCase().includes('sender')) {
-                errorCode = 'SENDER_NOT_VERIFIED';
-            }
+        // Provide helpful error messages
+        if (error.message.includes('Invalid login') || error.message.includes('authentication failed')) {
+            console.error('   💡 Solution: Check your Gmail App Password');
+            console.error('      → Make sure you\'re using an App Password, not your regular password');
+            console.error('      → Generate one at: https://myaccount.google.com/apppasswords');
+        } else if (error.message.includes('quota') || error.message.includes('limit')) {
+            console.error('   💡 Solution: Gmail daily sending limit reached');
+            console.error('      → Free Gmail accounts: 500 emails/day');
+            console.error('      → Wait until tomorrow or upgrade to Google Workspace');
         }
         
         return { 
             success: false, 
-            error: errorMessage,
-            errorCode: errorCode,
-            statusCode: error.response?.statusCode || null,
-            details: error.response?.body || null
+            error: error.message,
+            errorCode: 'GMAIL_ERROR'
         };
     }
 };
 
 // Test email configuration
 const testEmailConnection = async () => {
-    if (!process.env.SENDGRID_API_KEY) {
-        console.log('⚠️ SendGrid API key not configured');
-        return { success: false, message: 'Email service not initialized' };
+    const email = process.env.GMAIL_EMAIL || process.env.GMAIL_USER;
+    const password = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD;
+
+    if (!email || !password) {
+        console.log('⚠️ Gmail credentials not configured');
+        return { success: false, message: 'Gmail service not initialized' };
     }
 
     try {
-        // SendGrid doesn't have a verify method, but we can check if API key is set
-        console.log('✅ SendGrid email service is configured');
-        return { success: true, message: 'SendGrid email service is ready' };
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: email,
+                pass: password
+            }
+        });
+
+        // Verify connection
+        await transporter.verify();
+        console.log('✅ Gmail SMTP service is configured and ready');
+        return { success: true, message: 'Gmail SMTP service is ready' };
     } catch (error) {
-        console.error('❌ Email service connection failed:', error.message);
+        console.error('❌ Gmail service connection failed:', error.message);
         return { success: false, error: error.message };
     }
 };

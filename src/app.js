@@ -8,7 +8,7 @@ const authRoutes = require('./routes/authRoutes');
 const setupRoutes = require('./routes/setupRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
 const errorHandler = require('./middleware/error');
-const { initializeEmailService } = require('./utils/emailService');
+const { initializeEmailService } = require('./utils/gmailService');
 
 const app = express();
 const PORT = process.env.PORT || 5004;

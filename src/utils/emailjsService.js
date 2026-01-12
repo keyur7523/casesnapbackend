@@ -28,41 +28,75 @@ const sendEmployeeInvitation = async (emailData) => {
 
     // Prepare EmailJS request data
     const emailjsData = {
-        service_id: process.env.EMAILJS_SERVICE_ID,
-        template_id: process.env.EMAILJS_TEMPLATE_ID,
+        service_id: process.env.EMAILJS_SERVICE_ID || 'service_erm300c',
+        template_id: process.env.EMAILJS_TEMPLATE_ID || 'template_wn4dbsz',
         user_id: process.env.EMAILJS_PUBLIC_KEY,
         template_params: {
             to_email: to,
             to_name: `${firstName} ${lastName}`,
-            // Template parameters matching your HTML template
+            // Template parameters - adjust these to match your EmailJS template variables
+            'employee_name': `${firstName} ${lastName}`,
+            'employeeName': `${firstName} ${lastName}`,
             'Employee Name': `${firstName} ${lastName}`,
+            'organization_name': organizationName,
+            'organizationName': organizationName,
             'Organization Name': organizationName,
+            'admin_name': adminName,
+            'adminName': adminName,
             'Admin Name': adminName,
+            'admin_email': companyEmail,
+            'adminEmail': companyEmail,
             'Admin Email': companyEmail,
+            'invite_link': invitationLink,
+            'inviteLink': invitationLink,
             'Invite Link': invitationLink,
+            'invitationLink': invitationLink,
+            'company_portal_link': process.env.FRONTEND_URL || 'http://localhost:3000',
+            'companyPortalLink': process.env.FRONTEND_URL || 'http://localhost:3000',
             'Company Portal Link': process.env.FRONTEND_URL || 'http://localhost:3000'
         }
     };
 
     console.log('📧 Sending EmailJS invitation...');
-    console.log('📋 EmailJS data:', {
-        service_id: emailjsData.service_id,
-        template_id: emailjsData.template_id,
-        to_email: emailjsData.template_params.to_email,
-        'Employee Name': emailjsData.template_params['Employee Name'],
-        'Organization Name': emailjsData.template_params['Organization Name'],
-        'Admin Name': emailjsData.template_params['Admin Name'],
-        'Admin Email': emailjsData.template_params['Admin Email'],
-        'Invite Link': emailjsData.template_params['Invite Link']
-    });
+    console.log('📋 EmailJS Configuration:');
+    console.log('   Service ID:', emailjsData.service_id);
+    console.log('   Template ID:', emailjsData.template_id);
+    console.log('   To Email:', emailjsData.template_params.to_email);
+    console.log('   Employee Name:', emailjsData.template_params.to_name);
+    console.log('   Organization:', emailjsData.template_params.organizationName);
+    console.log('   Admin Name:', emailjsData.template_params.adminName);
+    console.log('   Invitation Link:', emailjsData.template_params.invitationLink);
 
     try {
+        console.log('📤 Attempting to send email via EmailJS...');
         const result = await sendEmailJS(emailjsData);
         console.log('✅ EmailJS invitation sent successfully');
+        console.log('📧 Sent to:', to);
+        console.log('📨 Message ID:', result.messageId || 'emailjs-sent');
         return { success: true, messageId: result.messageId || 'emailjs-sent' };
     } catch (error) {
-        console.error('❌ EmailJS sending failed:', error.message);
-        return { success: false, error: error.message };
+        console.error('❌ EmailJS sending failed!');
+        console.error('📧 Error message:', error.message);
+        console.error('📧 Recipient email:', to);
+        console.error('📧 Service ID:', emailjsData.service_id);
+        console.error('📧 Template ID:', emailjsData.template_id);
+        
+        // Provide helpful error messages
+        if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+            console.error('   💡 Solution: Check your EmailJS Public Key (EMAILJS_PUBLIC_KEY)');
+            console.error('      → Get it from EmailJS dashboard → Account → API Keys');
+        }
+        if (error.message.includes('400') || error.message.includes('Bad Request')) {
+            console.error('   💡 Solution: Check your Service ID and Template ID');
+            console.error('      → Service ID should be: service_erm300c');
+            console.error('      → Template ID should be: template_wn4dbsz');
+        }
+        
+        return { 
+            success: false, 
+            error: error.message,
+            errorCode: 'EMAILJS_ERROR'
+        };
     }
 };
 
@@ -112,13 +146,22 @@ const sendEmailJS = (data) => {
 
 // Initialize EmailJS service
 const initializeEmailService = () => {
-    if (process.env.EMAILJS_SERVICE_ID && process.env.EMAILJS_TEMPLATE_ID && process.env.EMAILJS_PUBLIC_KEY) {
+    const serviceId = process.env.EMAILJS_SERVICE_ID || 'service_erm300c';
+    const templateId = process.env.EMAILJS_TEMPLATE_ID || 'template_wn4dbsz';
+    const publicKey = process.env.EMAILJS_PUBLIC_KEY;
+    
+    if (publicKey) {
         console.log('✅ EmailJS service initialized');
-        console.log('📧 Service ID:', process.env.EMAILJS_SERVICE_ID);
-        console.log('📧 Template ID:', process.env.EMAILJS_TEMPLATE_ID);
+        console.log('📧 Service ID:', serviceId);
+        console.log('📧 Template ID:', templateId);
+        console.log('📧 Public Key:', publicKey ? '✅ Configured' : '❌ Missing');
         return true;
     } else {
-        console.log('⚠️ EmailJS not configured - missing environment variables');
+        console.log('⚠️ EmailJS not fully configured');
+        console.log('📧 Service ID:', serviceId, '(using default)');
+        console.log('📧 Template ID:', templateId, '(using default)');
+        console.log('📧 Public Key: ❌ Missing - Add EMAILJS_PUBLIC_KEY to .env file');
+        console.log('   → Get it from EmailJS dashboard → Account → API Keys');
         return false;
     }
 };
