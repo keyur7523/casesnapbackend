@@ -2,6 +2,8 @@
 
 const Organization = require('../models/Organization');
 const User = require('../models/User');
+const Role = require('../models/Role');
+const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const jwt = require('jsonwebtoken'); // For generating tokens
@@ -16,7 +18,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     console.log('📋 Organization data received:', {
         companyName: orgData?.companyName,
         companyEmail: orgData?.companyEmail,
-        industry: orgData?.industry
+        industry: orgData?.industry,
+        subscriptionPlan: orgData?.subscriptionPlan
     });
     console.log('👤 Super Admin data received:', {
         firstName: adminData?.firstName,
@@ -27,17 +30,16 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     // -----------------------------------------------------------
     // 1. Initial Checks (Allow multiple organizations)
     // -----------------------------------------------------------
-    // Check if the email is already used for an admin user
-    console.log('🔍 Checking for existing admin with email:', adminData.email);
-    const existingAdminWithEmail = await User.findOne({ 
-        email: adminData.email,
-        role: 'admin' 
+    // Check if the email is already used for a user
+    console.log('🔍 Checking for existing user with email:', adminData.email);
+    const existingUserWithEmail = await User.findOne({ 
+        email: adminData.email
     });
-    if (existingAdminWithEmail) {
-        console.log('❌ Admin user with this email already exists');
-        return next(new ErrorResponse('This email address is already registered as an admin user. Please use a different email address.', 400));
+    if (existingUserWithEmail) {
+        console.log('❌ User with this email already exists');
+        return next(new ErrorResponse('This email address is already registered. Please use a different email address.', 400));
     }
-    console.log('✅ Email is available for admin user');
+    console.log('✅ Email is available');
 
     // Check if organization name is already taken
     console.log('🔍 Checking for existing organization with name:', orgData.companyName);
@@ -62,6 +64,16 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     if (adminData.password !== adminData.confirmPassword) {
         return next(new ErrorResponse('Password and confirm password do not match. Please make sure both passwords are identical.', 400));
     }
+    
+    // Validate subscription plan if provided
+    if (orgData.subscriptionPlan) {
+        const validPlans = ['free', 'base', 'popular'];
+        if (!validPlans.includes(orgData.subscriptionPlan.toLowerCase())) {
+            return next(new ErrorResponse(`Invalid subscription plan. Must be one of: ${validPlans.join(', ')}`, 400));
+        }
+        // Normalize to lowercase
+        orgData.subscriptionPlan = orgData.subscriptionPlan.toLowerCase();
+    }
     // Note: Mongoose will handle the rest of the validation (required, unique, email format, etc.)
 
     // -----------------------------------------------------------
@@ -74,7 +86,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
         console.log('✅ Organization created successfully:', {
             id: organization._id,
             name: organization.companyName,
-            email: organization.companyEmail
+            email: organization.companyEmail,
+            subscriptionPlan: organization.subscriptionPlan
         });
     } catch (err) {
         console.error('❌ Error creating organization:', err);
@@ -95,8 +108,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
             email: adminData.email,
             phone: adminData.phone,
             password: adminData.password,
-            role: 'admin', // Explicitly set role to admin
             organization: organization._id // Link to the newly created organization
+            // Note: role (ObjectId) will be assigned after SUPER_ADMIN role is created
         });
         console.log('✅ Super admin user created successfully:', {
             id: superAdminUser._id,
@@ -117,7 +130,52 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     }
 
     // -----------------------------------------------------------
-    // 5. Update Organization with Super Admin reference
+    // 5. Create SUPER_ADMIN Role (Priority 1)
+    // -----------------------------------------------------------
+    console.log('👑 Creating SUPER_ADMIN role...');
+    
+    // Get all active modules dynamically from database
+    const activeModules = await Module.find({ isActive: true }).select('name');
+    console.log('📦 Active modules found:', activeModules.map(m => m.name));
+    
+    // Build permissions dynamically based on available modules
+    const permissions = activeModules.map(module => ({
+        module: module.name,
+        actions: ['create', 'read', 'update', 'delete']
+    }));
+    
+    console.log('🔐 SUPER_ADMIN permissions:', permissions);
+    
+    let superAdminRole;
+    try {
+        superAdminRole = await Role.create({
+            name: 'SUPER_ADMIN',
+            description: 'Super Administrator with full system access',
+            organization: organization._id,
+            priority: 1, // Highest priority
+            isSystemRole: true,
+            permissions: permissions, // Dynamic permissions based on available modules
+            createdBy: superAdminUser._id
+        });
+        console.log('✅ SUPER_ADMIN role created successfully');
+    } catch (err) {
+        console.error('❌ Error creating SUPER_ADMIN role:', err);
+        console.log('🧹 Cleaning up due to role creation failure...');
+        await User.findByIdAndDelete(superAdminUser._id);
+        await Organization.findByIdAndDelete(organization._id);
+        return next(err);
+    }
+
+    // -----------------------------------------------------------
+    // 6. Assign SUPER_ADMIN Role to Super Admin User
+    // -----------------------------------------------------------
+    console.log('🔗 Assigning SUPER_ADMIN role to super admin user...');
+    superAdminUser.role = superAdminRole._id;
+    await superAdminUser.save();
+    console.log('✅ SUPER_ADMIN role assigned to user');
+
+    // -----------------------------------------------------------
+    // 7. Update Organization with Super Admin reference
     // -----------------------------------------------------------
     console.log('🔗 Linking super admin to organization...');
     organization.superAdmin = superAdminUser._id;
@@ -125,7 +183,7 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     console.log('✅ Organization updated with super admin reference');
 
     // -----------------------------------------------------------
-    // 6. Generate and Send JWT Token
+    // 8. Generate and Send JWT Token
     // -----------------------------------------------------------
     console.log('🔐 Generating JWT token...');
     const token = superAdminUser.getSignedJwtToken(); // We'll add this method to the User model
@@ -136,7 +194,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
         organization: {
             id: organization._id,
             name: organization.companyName,
-            email: organization.companyEmail
+            email: organization.companyEmail,
+            subscriptionPlan: organization.subscriptionPlan
         },
         superAdmin: {
             id: superAdminUser._id,
@@ -145,17 +204,33 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
         }
     });
 
+    // Populate role for response
+    await superAdminUser.populate('role', 'name priority permissions isSystemRole');
+
     res.status(201).json({
         success: true,
         message: 'Organization and Super Admin initialized successfully.',
         token, // Send the token for immediate login
-        user: { // Optionally send back basic user info
+        user: {
             id: superAdminUser._id,
             firstName: superAdminUser.firstName,
             lastName: superAdminUser.lastName,
             email: superAdminUser.email,
-            role: superAdminUser.role,
+            role: {
+                id: superAdminRole._id,
+                name: superAdminRole.name,
+                priority: superAdminRole.priority,
+                permissions: superAdminRole.permissions,
+                isSystemRole: superAdminRole.isSystemRole,
+                description: superAdminRole.description
+            },
             organizationId: organization._id
+        },
+        organization: {
+            id: organization._id,
+            companyName: organization.companyName,
+            companyEmail: organization.companyEmail,
+            subscriptionPlan: organization.subscriptionPlan
         }
     });
 });

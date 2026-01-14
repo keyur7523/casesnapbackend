@@ -11,8 +11,10 @@ const Organization = require('./src/models/Organization');
 
 async function connectDB() {
     try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log('✅ MongoDB Connected');
+        await mongoose.connect(process.env.MONGO_URI, {
+            dbName: 'casesnap'
+        });
+        console.log('✅ MongoDB Connected (database: casesnap)');
     } catch (err) {
         console.error('❌ MongoDB connection error:', err.message);
         process.exit(1);

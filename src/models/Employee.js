@@ -2,11 +2,16 @@
 
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { generateEmployeeId } = require('../utils/idGenerator');
 
 const EmployeeSchema = new mongoose.Schema({
+    _id: {
+        type: String,
+        default: generateEmployeeId
+    },
     // Admin Reference
     adminId: {
-        type: mongoose.Schema.ObjectId,
+        type: String,
         ref: 'User',
         required: [true, 'Admin ID is required']
     },
@@ -157,7 +162,7 @@ const EmployeeSchema = new mongoose.Schema({
     
     // Organization Reference
     organization: {
-        type: mongoose.Schema.ObjectId,
+        type: String,
         ref: 'Organization',
         required: [true, 'Employee must belong to an organization']
     },
@@ -198,7 +203,7 @@ const EmployeeSchema = new mongoose.Schema({
         default: null
     },
     archivedBy: {
-        type: mongoose.Schema.ObjectId,
+        type: String,
         ref: 'User',
         default: null
     },
@@ -229,7 +234,7 @@ const EmployeeSchema = new mongoose.Schema({
             enum: ['pending', 'active', 'inactive', 'terminated']
         },
         changedBy: {
-            type: mongoose.Schema.ObjectId,
+            type: String,
             ref: 'User'
         },
         changedAt: {

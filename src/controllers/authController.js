@@ -20,12 +20,24 @@ exports.login = asyncHandler(async (req, res, next) => {
     console.log('🔐 Attempting login for:', email);
 
     // 2. First try to find admin user
-    let user = await User.findOne({ email: email.toLowerCase() }).select('+password').populate('organization');
+    let user = await User.findOne({ email: email.toLowerCase() })
+        .select('+password');
     let userType = 'admin';
+    
+    // Populate role and organization after finding the user
+    if (user) {
+        await user.populate({
+            path: 'role',
+            select: 'name priority permissions isSystemRole description'
+        });
+        await user.populate('organization', 'companyName companyEmail _id subscriptionPlan');
+    }
 
     // 3. If no admin user found, try to find employee
     if (!user) {
-        user = await Employee.findOne({ email: email.toLowerCase() }).select('+password').populate('organization');
+        user = await Employee.findOne({ email: email.toLowerCase() })
+            .select('+password')
+            .populate('organization', 'companyName companyEmail _id subscriptionPlan');
         userType = 'employee';
     }
 
@@ -53,13 +65,28 @@ exports.login = asyncHandler(async (req, res, next) => {
     }
 
     // 7. Create token with appropriate role
+    // For admin users, include role ID in token if available
+    let roleId = userType;
+    if (userType === 'admin' && user.role) {
+        // Get role ID whether it's populated or not
+        if (typeof user.role === 'object' && user.role._id) {
+            roleId = user.role._id;
+        } else if (typeof user.role === 'string') {
+            roleId = user.role;
+        } else if (Buffer.isBuffer(user.role)) {
+            roleId = user.role.toString('hex');
+        }
+    }
+    
+    const tokenPayload = {
+        id: user._id,
+        email: user.email,
+        organization: user.organization?._id || user.organization,
+        role: roleId
+    };
+    
     const token = jwt.sign(
-        { 
-            id: user._id,
-            email: user.email,
-            organization: user.organization,
-            role: userType
-        },
+        tokenPayload,
         process.env.JWT_SECRET,
         { expiresIn: process.env.JWT_EXPIRE || '30d' }
     );
@@ -96,21 +123,58 @@ exports.login = asyncHandler(async (req, res, next) => {
                 adminId: user.adminId,
                 status: user.status,
                 role: 'employee',
+                subscriptionPlan: user.organization?.subscriptionPlan || null,
                 createdAt: user.createdAt
             }
         });
     } else {
-        res.status(200).json({
+        // Ensure role is populated if it wasn't already
+        if (user.role && (!user.role.name || typeof user.role === 'string' || Buffer.isBuffer(user.role))) {
+            const Role = require('../models/Role');
+            let roleId = user.role;
+            
+            // Convert Buffer to string if needed
+            if (Buffer.isBuffer(roleId)) {
+                roleId = roleId.toString('hex');
+            } else if (typeof roleId === 'object' && roleId.toString) {
+                roleId = roleId.toString();
+            }
+            
+            if (roleId) {
+                const role = await Role.findById(roleId);
+                if (role) {
+                    user.role = role;
+                }
+            }
+        }
+        
+        // Format response to match setup response exactly
+        const responseData = {
             success: true,
             token,
             user: {
                 id: user._id,
+                firstName: user.firstName,
+                lastName: user.lastName,
                 email: user.email,
-                name: `${user.firstName} ${user.lastName}`,
-                role: user.role,
-                organization: user.organization
+                organizationId: user.organization?._id || user.organization || null,
+                subscriptionPlan: user.organization?.subscriptionPlan || null
             }
-        });
+        };
+
+        // Add role details if available
+        if (user.role && typeof user.role === 'object' && user.role.name) {
+            responseData.user.role = {
+                id: user.role._id,
+                name: user.role.name,
+                priority: user.role.priority,
+                permissions: user.role.permissions || [],
+                isSystemRole: user.role.isSystemRole || false,
+                description: user.role.description || null
+            };
+        }
+
+        res.status(200).json(responseData);
     }
 });
 

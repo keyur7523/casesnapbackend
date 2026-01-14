@@ -3,8 +3,13 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { generateUserId } = require('../utils/idGenerator');
 
 const UserSchema = new mongoose.Schema({
+    _id: {
+        type: String,
+        default: generateUserId
+    },
     // We'll use email as the primary login identifier and also as the username
     // The frontend's superAdminData doesn't have a separate username field,
     // and login uses email, so this makes sense.
@@ -48,13 +53,14 @@ const UserSchema = new mongoose.Schema({
         minlength: [6, 'Password must be at least 6 characters'],
         select: false
     },
+    // Reference to Role model (for RBAC system)
     role: {
         type: String,
-        enum: ['user', 'admin'],
-        default: 'user'
+        ref: 'Role',
+        required: false // Will be assigned after role creation
     },
     organization: { // <--- NEW FIELD: Link to the organization
-        type: mongoose.Schema.ObjectId,
+        type: String,
         ref: 'Organization', // References the Organization model
         required: [true, 'User must belong to an organization'] // Every user belongs to an organization
     },

@@ -1,0 +1,87 @@
+// utils/idGenerator.js
+// Custom ID generator with prefixes
+
+const crypto = require('crypto');
+
+/**
+ * Generate a custom ID with prefix
+ * @param {String} prefix - Prefix for the ID (e.g., 'organization', 'user', 'role')
+ * @returns {String} Custom ID in format: prefix_randomstring
+ */
+const generateCustomId = (prefix) => {
+    // Generate a random string (12 characters)
+    const randomString = crypto.randomBytes(6).toString('hex');
+    return `${prefix}_${randomString}`;
+};
+
+/**
+ * Generate organization ID
+ * @returns {String} organization_xxxxx
+ */
+const generateOrganizationId = () => {
+    return generateCustomId('organization');
+};
+
+/**
+ * Generate user ID
+ * @returns {String} user_xxxxx
+ */
+const generateUserId = () => {
+    return generateCustomId('user');
+};
+
+/**
+ * Generate role ID
+ * @returns {String} role_xxxxx
+ */
+const generateRoleId = () => {
+    return generateCustomId('role');
+};
+
+/**
+ * Generate employee ID
+ * @returns {String} employee_xxxxx
+ */
+const generateEmployeeId = () => {
+    return generateCustomId('employee');
+};
+
+/**
+ * Generate client ID
+ * @returns {String} client_xxxxx
+ */
+const generateClientId = () => {
+    return generateCustomId('client');
+};
+
+/**
+ * Generate module ID
+ * @returns {String} module_xxxxx
+ */
+const generateModuleId = () => {
+    return generateCustomId('module');
+};
+
+/**
+ * Validate custom ID format
+ * @param {String} id - ID to validate
+ * @param {String} expectedPrefix - Expected prefix
+ * @returns {Boolean} True if valid
+ */
+const isValidCustomId = (id, expectedPrefix) => {
+    if (!id || typeof id !== 'string') return false;
+    const prefix = id.split('_')[0];
+    return prefix === expectedPrefix && id.includes('_');
+};
+
+module.exports = {
+    generateCustomId,
+    generateOrganizationId,
+    generateUserId,
+    generateRoleId,
+    generateEmployeeId,
+    generateClientId,
+    generateModuleId,
+    isValidCustomId,
+    generateId: generateCustomId // Alias for Module model
+};

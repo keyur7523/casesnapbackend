@@ -1,8 +1,13 @@
 // models/Organization.js
 
 const mongoose = require('mongoose');
+const { generateOrganizationId } = require('../utils/idGenerator');
 
 const OrganizationSchema = new mongoose.Schema({
+    _id: {
+        type: String,
+        default: generateOrganizationId
+    },
     companyName: {
         type: String,
         required: [true, 'Please add a company name'],
@@ -72,11 +77,23 @@ const OrganizationSchema = new mongoose.Schema({
         default: [],
         // You could add custom validation here to ensure practice areas are from a predefined list if needed
     },
-    // Reference to the super admin user, though the user will also reference the organization
+    subscriptionPlan: {
+        type: String,
+        required: [true, 'Please select a subscription plan'],
+        enum: {
+            values: ['free', 'base', 'popular'],
+            message: 'Subscription plan must be one of: free, base, popular'
+        },
+        default: 'free',
+        trim: true
+    },
+    // Reference to the super admin user (exactly ONE per organization)
     superAdmin: {
-        type: mongoose.Schema.ObjectId,
+        type: String,
         ref: 'User',
-        required: false // Will be added after user is created
+        required: false, // Will be added after user is created
+        unique: true, // Ensure only one SUPER_ADMIN per organization
+        sparse: true // Allow null values but ensure uniqueness when present
     }
 }, {
     timestamps: true // Adds createdAt and updatedAt

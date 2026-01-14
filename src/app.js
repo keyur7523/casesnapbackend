@@ -7,6 +7,10 @@ const cors = require('cors');
 const authRoutes = require('./routes/authRoutes');
 const setupRoutes = require('./routes/setupRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
+const clientRoutes = require('./routes/clientRoutes');
+const roleRoutes = require('./routes/roleRoutes');
+const moduleRoutes = require('./routes/moduleRoutes');
+const exampleRoutes = require('./routes/exampleRoutes');
 const errorHandler = require('./middleware/error');
 const { initializeEmailService } = require('./utils/gmailService');
 
@@ -76,10 +80,11 @@ app.use((req, res, next) => {
 const connectDB = async () => {
     try {
         await mongoose.connect(process.env.MONGO_URI, {
+            dbName: 'casesnap', // Explicitly set database name to 'casesnap'
             // useNewUrlParser: true, // Deprecated in newer Mongoose versions
             // useUnifiedTopology: true, // Deprecated in newer Mongoose versions
         });
-        console.log('MongoDB Connected...');
+        console.log('MongoDB Connected to database: casesnap');
     } catch (err) {
         console.error('MongoDB connection error:', err.message);
         // Exit process with failure
@@ -89,6 +94,12 @@ const connectDB = async () => {
 
 // Connect to the database
 connectDB();
+
+// Initialize default modules after database connection
+mongoose.connection.once('open', async () => {
+    const { initializeDefaultModules } = require('./utils/initializeModules');
+    await initializeDefaultModules();
+});
 
 // Initialize email service
 initializeEmailService();
@@ -100,6 +111,10 @@ app.get('/', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/setup', setupRoutes);
 app.use('/api/employees', employeeRoutes);
+app.use('/api/clients', clientRoutes);
+app.use('/api/roles', roleRoutes);
+app.use('/api/modules', moduleRoutes);
+app.use('/api/example', exampleRoutes);
 app.use(errorHandler);
 
 
