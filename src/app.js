@@ -10,6 +10,7 @@ const employeeRoutes = require('./routes/employeeRoutes');
 const clientRoutes = require('./routes/clientRoutes');
 const roleRoutes = require('./routes/roleRoutes');
 const moduleRoutes = require('./routes/moduleRoutes');
+const userRoutes = require('./routes/userRoutes');
 const exampleRoutes = require('./routes/exampleRoutes');
 const errorHandler = require('./middleware/error');
 const { initializeEmailService } = require('./utils/gmailService');
@@ -114,6 +115,7 @@ app.use('/api/employees', employeeRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/roles', roleRoutes);
 app.use('/api/modules', moduleRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/example', exampleRoutes);
 app.use(errorHandler);
 

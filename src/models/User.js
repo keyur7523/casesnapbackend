@@ -49,7 +49,7 @@ const UserSchema = new mongoose.Schema({
     },
     password: {
         type: String,
-        required: [true, 'Please add a password'],
+        required: false, // Not required during invitation, will be set during registration
         minlength: [6, 'Password must be at least 6 characters'],
         select: false
     },
@@ -64,6 +64,45 @@ const UserSchema = new mongoose.Schema({
         ref: 'Organization', // References the Organization model
         required: [true, 'User must belong to an organization'] // Every user belongs to an organization
     },
+    // Invitation fields (similar to Employee model)
+    invitationToken: {
+        type: String,
+        select: false // Don't return in queries by default
+    },
+    invitationStatus: {
+        type: String,
+        enum: ['pending', 'completed', 'expired'],
+        default: null
+    },
+    invitationExpires: {
+        type: Date
+    },
+    // Store who invited this user (for authorization)
+    invitedBy: {
+        type: String,
+        ref: 'User',
+        required: false
+    },
+    // User type: advocate, intern, or non
+    userType: {
+        type: String,
+        enum: ['advocate', 'intern', 'non'],
+        default: 'non',
+        required: false
+    },
+    // Salary field (optional, can be set during invitation or later)
+    salary: {
+        type: Number,
+        required: false,
+        default: 0,
+        min: [0, 'Salary cannot be negative']
+    },
+    // User status: pending (invited/registered but not approved), approved (can login), inactive, terminated
+    status: {
+        type: String,
+        enum: ['pending', 'approved', 'inactive', 'terminated'],
+        default: 'pending'
+    },
     createdAt: {
         type: Date,
         default: Date.now
@@ -74,8 +113,9 @@ const UserSchema = new mongoose.Schema({
 
 // Mongoose Middleware (runs before saving to DB)
 UserSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) {
-        next();
+    // Only hash password if it's being modified and exists
+    if (!this.isModified('password') || !this.password) {
+        return next();
     }
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);

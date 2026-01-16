@@ -37,6 +37,15 @@ exports.createRole = asyncHandler(async (req, res, next) => {
     const organizationId = req.user.organization;
     const creatorRole = req.userRole;
 
+    console.log('📝 Creating role:', {
+        name,
+        priority,
+        organizationId,
+        creatorRolePriority: creatorRole?.priority,
+        creatorRoleIsSystemRole: creatorRole?.isSystemRole,
+        permissionsCount: permissions?.length
+    });
+
     // Validate required fields
     if (!name) {
         return next(new ErrorResponse('Role name is required', 400));
@@ -49,12 +58,14 @@ exports.createRole = asyncHandler(async (req, res, next) => {
     // Validate permissions structure (async)
     const permissionValidation = await validatePermissions(permissions || []);
     if (!permissionValidation.valid) {
+        console.log('❌ Permission validation failed:', permissionValidation.error);
         return next(new ErrorResponse(permissionValidation.error, 400));
     }
 
     // Check if user can create this role
     const creationValidation = validateRoleCreation(creatorRole, priority);
     if (!creationValidation.valid) {
+        console.log('❌ Role creation validation failed:', creationValidation.error);
         return next(new ErrorResponse(creationValidation.error, 403));
     }
 
@@ -72,7 +83,9 @@ exports.createRole = asyncHandler(async (req, res, next) => {
     }
 
     // Prevent creating role with priority 1 (reserved for SUPER_ADMIN)
-    if (priority === 1 && !creatorRole.isSuperAdmin) {
+    // Check if creator is SUPER_ADMIN (priority 1 and isSystemRole true)
+    const isSuperAdmin = creatorRole.priority === 1 && creatorRole.isSystemRole === true;
+    if (priority === 1 && !isSuperAdmin) {
         return next(new ErrorResponse(
             'Priority 1 is reserved for SUPER_ADMIN',
             403
@@ -112,26 +125,50 @@ exports.createRole = asyncHandler(async (req, res, next) => {
                 description: role.description,
                 priority: role.priority,
                 permissions: role.permissions,
+                isSystemRole: role.isSystemRole,
                 organization: role.organization,
+                createdBy: role.createdBy,
                 createdAt: role.createdAt
             },
-            suggestedPriority: await getSuggestedPriority(organizationId),
             modules: modules // Include available modules in response
         }
     });
 });
 
 /**
- * @desc    Get all roles for an organization
+ * @desc    Get all roles for organization
  * @route   GET /api/roles
  * @access  Private (Admin with role)
  */
 exports.getRoles = asyncHandler(async (req, res, next) => {
     const organizationId = req.user.organization;
+    const { excludeSuperAdmin } = req.query; // Query param to exclude SUPER_ADMIN
 
-    const roles = await Role.find({ organization: organizationId })
-        .populate('createdBy', 'firstName lastName email')
+    // Build query
+    const query = { organization: organizationId };
+    
+    // Always exclude SUPER_ADMIN from role listing (it's created during setup and shouldn't be assignable)
+    // SUPER_ADMIN can only be created during organization setup, not via invitation
+    query.$or = [
+        { priority: { $ne: 1 } },
+        { isSystemRole: { $ne: true } }
+    ];
+
+    const roles = await Role.find(query)
         .sort({ priority: 1 }); // Sort by priority ascending (1 = highest authority)
+
+    // Manually populate createdBy since it's a String ID, not ObjectId
+    const rolesWithCreatedBy = await Promise.all(roles.map(async (role) => {
+        const roleData = role.toObject();
+        if (role.createdBy) {
+            const createdByUser = await User.findById(role.createdBy)
+                .select('firstName lastName email');
+            if (createdByUser) {
+                roleData.createdBy = createdByUser;
+            }
+        }
+        return roleData;
+    }));
 
     // Get available modules
     const modules = await Module.find({ isActive: true })
@@ -140,8 +177,8 @@ exports.getRoles = asyncHandler(async (req, res, next) => {
 
     res.status(200).json({
         success: true,
-        count: roles.length,
-        data: roles,
+        count: rolesWithCreatedBy.length,
+        data: rolesWithCreatedBy,
         modules: modules // Include available modules in response
     });
 });
@@ -158,15 +195,28 @@ exports.getRole = asyncHandler(async (req, res, next) => {
     const role = await Role.findOne({
         _id: roleId,
         organization: organizationId
-    }).populate('createdBy', 'firstName lastName email');
+    });
 
     if (!role) {
         return next(new ErrorResponse('Role not found', 404));
     }
 
+    // Manually fetch createdBy user since it's a String ID, not ObjectId
+    let createdByUser = null;
+    if (role.createdBy) {
+        createdByUser = await User.findById(role.createdBy)
+            .select('firstName lastName email');
+    }
+
+    // Convert role to object and add createdBy user data
+    const roleData = role.toObject();
+    if (createdByUser) {
+        roleData.createdBy = createdByUser;
+    }
+
     res.status(200).json({
         success: true,
-        data: role
+        data: roleData
     });
 });
 
@@ -179,9 +229,9 @@ exports.updateRole = asyncHandler(async (req, res, next) => {
     const { roleId } = req.params;
     const { name, description, permissions } = req.body;
     const organizationId = req.user.organization;
-    const creatorRole = req.userRole;
+    const updaterRole = req.userRole;
 
-    // Find role
+    // Get target role
     const role = await Role.findOne({
         _id: roleId,
         organization: organizationId
@@ -191,38 +241,25 @@ exports.updateRole = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Role not found', 404));
     }
 
-    // Check if user can manage this role
-    if (!creatorRole.canManageRole(role)) {
-        return next(new ErrorResponse(
-            `You cannot manage roles with priority ${role.priority} or lower`,
-            403
-        ));
-    }
-
-    // Prevent updating priority (immutable)
-    if (req.body.priority && req.body.priority !== role.priority) {
-        return next(new ErrorResponse('Role priority cannot be modified', 400));
-    }
-
     // Validate permissions if provided
-    if (permissions) {
-        const permissionValidation = validatePermissions(permissions);
+    if (permissions !== undefined) {
+        const permissionValidation = await validatePermissions(permissions);
         if (!permissionValidation.valid) {
             return next(new ErrorResponse(permissionValidation.error, 400));
         }
     }
 
-    // Update role
-    if (name) role.name = name;
+    // Update fields
+    if (name !== undefined) role.name = name;
     if (description !== undefined) role.description = description;
-    if (permissions) role.permissions = permissions;
+    if (permissions !== undefined) role.permissions = permissions;
 
     await role.save();
 
     console.log('✅ Role updated:', {
         id: role._id,
         name: role.name,
-        updatedBy: req.user._id
+        priority: role.priority
     });
 
     res.status(200).json({
@@ -240,9 +277,7 @@ exports.updateRole = asyncHandler(async (req, res, next) => {
 exports.deleteRole = asyncHandler(async (req, res, next) => {
     const { roleId } = req.params;
     const organizationId = req.user.organization;
-    const creatorRole = req.userRole;
 
-    // Find role
     const role = await Role.findOne({
         _id: roleId,
         organization: organizationId
@@ -253,23 +288,16 @@ exports.deleteRole = asyncHandler(async (req, res, next) => {
     }
 
     // Prevent deleting SUPER_ADMIN role
-    if (role.isSuperAdmin) {
+    const isSuperAdmin = role.priority === 1 && role.isSystemRole === true;
+    if (isSuperAdmin) {
         return next(new ErrorResponse('Cannot delete SUPER_ADMIN role', 403));
     }
 
-    // Check if user can manage this role
-    if (!creatorRole.canManageRole(role)) {
-        return next(new ErrorResponse(
-            `You cannot delete roles with priority ${role.priority} or lower`,
-            403
-        ));
-    }
-
-    // Check if any users are assigned to this role
+    // Check if role is assigned to any users
     const usersWithRole = await User.countDocuments({ role: roleId });
     if (usersWithRole > 0) {
         return next(new ErrorResponse(
-            `Cannot delete role: ${usersWithRole} user(s) are assigned to this role`,
+            `Cannot delete role. It is assigned to ${usersWithRole} user(s)`,
             400
         ));
     }
@@ -278,14 +306,12 @@ exports.deleteRole = asyncHandler(async (req, res, next) => {
 
     console.log('✅ Role deleted:', {
         id: roleId,
-        name: role.name,
-        deletedBy: req.user._id
+        name: role.name
     });
 
     res.status(200).json({
         success: true,
-        message: 'Role deleted successfully',
-        data: {}
+        message: 'Role deleted successfully'
     });
 });
 
@@ -297,9 +323,8 @@ exports.deleteRole = asyncHandler(async (req, res, next) => {
 exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
     const { roleId, userId } = req.params;
     const organizationId = req.user.organization;
-    const creatorRole = req.userRole;
 
-    // Find role
+    // Get target role
     const role = await Role.findOne({
         _id: roleId,
         organization: organizationId
@@ -309,15 +334,7 @@ exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Role not found', 404));
     }
 
-    // Check if user can manage this role
-    if (!creatorRole.canManageRole(role)) {
-        return next(new ErrorResponse(
-            `You cannot assign roles with priority ${role.priority} or lower`,
-            403
-        ));
-    }
-
-    // Find user
+    // Get target user
     const user = await User.findOne({
         _id: userId,
         organization: organizationId
@@ -327,16 +344,21 @@ exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('User not found', 404));
     }
 
-    // Assign role
+    // Prevent assigning SUPER_ADMIN role (only created during setup)
+    const isSuperAdmin = role.priority === 1 && role.isSystemRole === true;
+    if (isSuperAdmin) {
+        return next(new ErrorResponse('Cannot assign SUPER_ADMIN role', 403));
+    }
+
+    // Update user's role
     user.role = roleId;
     await user.save();
 
-    console.log('✅ Role assigned:', {
-        roleId: roleId,
+    console.log('✅ Role assigned to user:', {
+        roleId: role._id,
         roleName: role.name,
-        userId: userId,
-        userName: `${user.firstName} ${user.lastName}`,
-        assignedBy: req.user._id
+        userId: user._id,
+        userEmail: user.email
     });
 
     res.status(200).json({
@@ -345,14 +367,15 @@ exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
         data: {
             user: {
                 id: user._id,
+                email: user.email,
                 firstName: user.firstName,
                 lastName: user.lastName,
-                email: user.email,
-                role: {
-                    id: role._id,
-                    name: role.name,
-                    priority: role.priority
-                }
+                role: roleId
+            },
+            role: {
+                id: role._id,
+                name: role.name,
+                priority: role.priority
             }
         }
     });

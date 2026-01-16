@@ -108,7 +108,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
             email: adminData.email,
             phone: adminData.phone,
             password: adminData.password,
-            organization: organization._id // Link to the newly created organization
+            organization: organization._id, // Link to the newly created organization
+            status: 'approved' // SUPER_ADMIN is always approved as they are the owner of the organization
             // Note: role (ObjectId) will be assigned after SUPER_ADMIN role is created
         });
         console.log('✅ Super admin user created successfully:', {

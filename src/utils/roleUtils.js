@@ -37,8 +37,9 @@ exports.getSuggestedPriority = async (organizationId) => {
  * @returns {Object} { valid: boolean, error: string }
  */
 exports.validateRoleCreation = (userRole, newPriority) => {
-    // SUPER_ADMIN (priority 1) can create any role
-    if (userRole.priority === 1) {
+    // SUPER_ADMIN (priority 1 and isSystemRole true) can create any role
+    const isSuperAdmin = userRole.priority === 1 && userRole.isSystemRole === true;
+    if (isSuperAdmin) {
         return { valid: true };
     }
 

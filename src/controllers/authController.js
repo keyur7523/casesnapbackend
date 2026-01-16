@@ -64,6 +64,13 @@ exports.login = asyncHandler(async (req, res, next) => {
         }
     }
 
+    // 6b. Check if admin user is approved (only for admin users)
+    if (userType === 'admin') {
+        if (user.status !== 'approved') {
+            return next(new ErrorResponse('Your account is pending approval. Please wait for admin approval before logging in.', 401));
+        }
+    }
+
     // 7. Create token with appropriate role
     // For admin users, include role ID in token if available
     let roleId = userType;

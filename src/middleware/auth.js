@@ -5,6 +5,53 @@ const User = require('../models/User');
 const Employee = require('../models/Employee');
 const ErrorResponse = require('../utils/errorResponse');
 
+// Protect routes (optional - doesn't fail if no token)
+// Used for public routes that can optionally check authorization if user is authenticated
+exports.protectOptional = async (req, res, next) => {
+    let token;
+
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        // Set token from Bearer token in header
+        token = req.headers.authorization.split(' ')[1];
+    }
+
+    // If no token, continue without setting req.user (for public routes with optional auth)
+    if (!token) {
+        return next();
+    }
+
+    try {
+        // Verify token
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+        console.log('🔐 Optional auth - Token verified for user:', decoded.id);
+
+        // Check if it's an employee or admin user based on role in token
+        if (decoded.role === 'employee') {
+            // Get employee from token
+            req.user = await Employee.findById(decoded.id).populate('organization');
+            req.userType = 'employee';
+        } else {
+            // Get admin user from token
+            req.user = await User.findById(decoded.id).populate('organization');
+            req.userType = 'admin';
+        }
+
+        if (!req.user) {
+            // Don't fail, just continue without req.user
+            console.log('⚠️ User not found with token, continuing without authentication');
+        } else {
+            console.log('✅ Optional auth - User authenticated:', req.user.email);
+        }
+
+        next();
+    } catch (err) {
+        console.log('⚠️ Token verification failed, continuing without authentication:', err.message);
+        // Don't fail, just continue without req.user
+        next();
+    }
+};
+
 // Protect routes
 exports.protect = async (req, res, next) => {
     let token;
