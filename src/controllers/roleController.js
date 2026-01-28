@@ -142,9 +142,9 @@ exports.createRole = asyncHandler(async (req, res, next) => {
  */
 exports.getRoles = asyncHandler(async (req, res, next) => {
     const organizationId = req.user.organization;
-    const { excludeSuperAdmin } = req.query; // Query param to exclude SUPER_ADMIN
+    const currentUserRole = req.userRole; // Loaded by loadUserRole middleware
 
-    // Build query
+    // Build base query
     const query = { organization: organizationId };
     
     // Always exclude SUPER_ADMIN from role listing (it's created during setup and shouldn't be assignable)
@@ -154,11 +154,22 @@ exports.getRoles = asyncHandler(async (req, res, next) => {
         { isSystemRole: { $ne: true } }
     ];
 
-    const roles = await Role.find(query)
+    // Fetch all roles for this organization (excluding SUPER_ADMIN)
+    const allRoles = await Role.find(query)
         .sort({ priority: 1 }); // Sort by priority ascending (1 = highest authority)
 
+    // Apply visibility rules based on current user's role priority:
+    // - SUPER_ADMIN (priority 1, isSystemRole true) can see all roles (already has allRoles)
+    // - Other users should NOT see roles with higher authority (smaller priority number)
+    //   e.g., priority 3 user should not see priority 1 or 2 roles
+    let visibleRoles = allRoles;
+    if (currentUserRole && currentUserRole.priority && !(currentUserRole.priority === 1 && currentUserRole.isSystemRole === true)) {
+        const currentPriority = currentUserRole.priority;
+        visibleRoles = allRoles.filter(role => role.priority >= currentPriority);
+    }
+
     // Manually populate createdBy since it's a String ID, not ObjectId
-    const rolesWithCreatedBy = await Promise.all(roles.map(async (role) => {
+    const rolesWithCreatedBy = await Promise.all(visibleRoles.map(async (role) => {
         const roleData = role.toObject();
         if (role.createdBy) {
             const createdByUser = await User.findById(role.createdBy)

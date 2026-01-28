@@ -185,6 +185,21 @@ exports.login = asyncHandler(async (req, res, next) => {
     }
 });
 
+// @desc      Logout user
+// @route     POST /api/auth/logout
+// @access    Private (requires authentication)
+exports.logout = asyncHandler(async (req, res, next) => {
+    // Since JWT tokens are stateless, logout is primarily handled client-side
+    // This endpoint confirms logout and can be used for logging/logging out events
+    
+    console.log('🚪 Logout request from user:', req.user?.email || req.user?._id);
+    
+    res.status(200).json({
+        success: true,
+        message: 'Logged out successfully'
+    });
+});
+
 // @desc      Register Initial Admin User
 // @route     POST /api/auth/register-admin
 // @access    Public (only for initial setup)
