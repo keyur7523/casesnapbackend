@@ -1,0 +1,149 @@
+// utils/assigneeUtils.js
+// Assignee permission limits by subscription plan (only SUPER_ADMIN can grant assignee)
+// Assignee = user who can assign clients/cases to other users (client/cases modules)
+
+const User = require('../models/User');
+const Role = require('../models/Role');
+const Organization = require('../models/Organization');
+
+/** Plan-based assignee limits: free (14-day trial) = 2, base = 4, popular (professional) = 10 */
+const ASSIGNEE_LIMITS = {
+    free: 2,
+    base: 4,
+    popular: 10
+};
+
+/**
+ * Get max assignees allowed for a subscription plan
+ * @param {string} plan - 'free' | 'base' | 'popular'
+ * @returns {number}
+ */
+exports.getAssigneeLimit = (plan) => {
+    const key = (plan || 'free').toLowerCase().trim();
+    return ASSIGNEE_LIMITS[key] != null ? ASSIGNEE_LIMITS[key] : ASSIGNEE_LIMITS.free;
+};
+
+/** SUPER_ADMIN can always assign client/case; plan limits (2/4/10) apply only to other assignees */
+const isSuperAdminRole = (role) =>
+    role && role.priority === 1 && role.isSystemRole === true;
+
+/**
+ * Check if a role has assignee permission (on client or cases module)
+ * @param {Object} role - Role doc or plain object with permissions
+ * @returns {boolean}
+ */
+exports.roleHasAssigneePermission = (role) => {
+    if (!role || !Array.isArray(role.permissions)) return false;
+    return role.permissions.some(
+        (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
+    );
+};
+
+/**
+ * Get assignee permissions per module for frontend (who can assign client/case to other users).
+ * SUPER_ADMIN by default can assign client and case; others need assignee in role permissions.
+ * @param {Object} role - Role doc or plain object with permissions
+ * @returns {{ canAssignClient: boolean, canAssignCase: boolean }}
+ */
+exports.getAssigneePermissionsForRole = (role) => {
+    const out = { canAssignClient: false, canAssignCase: false };
+    if (!role) return out;
+    if (isSuperAdminRole(role)) return { canAssignClient: true, canAssignCase: true };
+    if (!Array.isArray(role.permissions)) return out;
+    for (const p of role.permissions) {
+        const actions = p.actions || [];
+        if (actions.includes('assignee')) {
+            if (p.module === 'client') out.canAssignClient = true;
+            if (p.module === 'cases') out.canAssignCase = true;
+        }
+    }
+    return out;
+};
+
+/** Check if user/role can assign (SUPER_ADMIN or has assignee permission on module) */
+exports.canAssignModule = (userRole, moduleName) => {
+    if (!userRole) return false;
+    if (isSuperAdminRole(userRole)) return true;
+    return userRole.hasPermission ? userRole.hasPermission(moduleName, 'assignee') : false;
+};
+
+/**
+ * Count distinct users in the organization who have assignee permission (for plan limit).
+ * SUPER_ADMIN does not count; plan gives 2/4/10 assignees (non-SUPER_ADMIN only).
+ * @param {string} organizationId
+ * @returns {Promise<number>}
+ */
+exports.getCurrentAssigneeCount = async (organizationId) => {
+    const assigneeRoles = await Role.find({
+        organization: organizationId,
+        $and: [
+            {
+                $or: [
+                    { 'permissions': { $elemMatch: { module: 'client', actions: 'assignee' } } },
+                    { 'permissions': { $elemMatch: { module: 'cases', actions: 'assignee' } } }
+                ]
+            },
+            { $or: [{ priority: { $ne: 1 } }, { isSystemRole: false }] }
+        ]
+    })
+        .select('_id')
+        .lean();
+
+    const ids = assigneeRoles.map((r) => r._id);
+    if (ids.length === 0) return 0;
+
+    return User.countDocuments({
+        organization: organizationId,
+        role: { $in: ids },
+        status: { $nin: ['terminated'] }
+    });
+};
+
+/**
+ * Get user IDs in the organization who have assignee permission for a module (for notifications).
+ * Includes SUPER_ADMIN. Used to notify assignees when a non-assignee creates a client/case.
+ * @param {string} organizationId
+ * @param {string} moduleName - 'client' | 'cases'
+ * @returns {Promise<string[]>} Array of user _id
+ */
+exports.getAssigneeUserIdsForModule = async (organizationId, moduleName) => {
+    const module = (moduleName || 'client').toLowerCase();
+    const assigneeRoles = await Role.find({
+        organization: organizationId,
+        $or: [
+            { priority: 1, isSystemRole: true },
+            { 'permissions': { $elemMatch: { module, actions: 'assignee' } } }
+        ]
+    })
+        .select('_id')
+        .lean();
+
+    const roleIds = assigneeRoles.map((r) => r._id);
+    if (roleIds.length === 0) return [];
+
+    const users = await User.find({
+        organization: organizationId,
+        role: { $in: roleIds },
+        status: { $nin: ['terminated'] }
+    })
+        .select('_id')
+        .lean();
+
+    return users.map((u) => u._id.toString());
+};
+
+/**
+ * Check if adding one more assignee would exceed plan limit
+ * @param {string} organizationId
+ * @param {boolean} [isAlreadyAssignee] - if the user being added is already an assignee (e.g. role change)
+ * @returns {Promise<{ allowed: boolean, current: number, limit: number }>}
+ */
+exports.checkAssigneeLimit = async (organizationId, isAlreadyAssignee = false) => {
+    const org = await Organization.findById(organizationId).select('subscriptionPlan').lean();
+    const plan = org?.subscriptionPlan || 'free';
+    const limit = exports.getAssigneeLimit(plan);
+    const current = await exports.getCurrentAssigneeCount(organizationId);
+    const effectiveNew = isAlreadyAssignee ? 0 : 1;
+    const allowed = current + effectiveNew <= limit;
+    return { allowed, current, limit };
+};

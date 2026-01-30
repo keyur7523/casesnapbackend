@@ -63,6 +63,14 @@ const generateModuleId = () => {
 };
 
 /**
+ * Generate notification ID
+ * @returns {String} notification_xxxxx
+ */
+const generateNotificationId = () => {
+    return generateCustomId('notification');
+};
+
+/**
  * Validate custom ID format
  * @param {String} id - ID to validate
  * @param {String} expectedPrefix - Expected prefix
@@ -82,6 +90,7 @@ module.exports = {
     generateEmployeeId,
     generateClientId,
     generateModuleId,
+    generateNotificationId,
     isValidCustomId,
     generateId: generateCustomId // Alias for Module model
 };

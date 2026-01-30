@@ -5,6 +5,7 @@ const Employee = require('../models/Employee'); // Import Employee model
 const asyncHandler = require('../middleware/asyncHandler'); // We'll create this next for error handling
 const ErrorResponse = require('../utils/errorResponse'); // We'll create this too
 const jwt = require('jsonwebtoken');
+const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 
 // @desc      Login user (Admin or Employee)
 // @route     POST /api/auth/login
@@ -179,6 +180,10 @@ exports.login = asyncHandler(async (req, res, next) => {
                 isSystemRole: user.role.isSystemRole || false,
                 description: user.role.description || null
             };
+            // Frontend: show assignee dropdown only when true (only these users can assign client/case to others)
+            responseData.user.assigneePermissions = getAssigneePermissionsForRole(user.role);
+        } else {
+            responseData.user.assigneePermissions = { canAssignClient: false, canAssignCase: false };
         }
 
         res.status(200).json(responseData);

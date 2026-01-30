@@ -4,6 +4,7 @@
 const ErrorResponse = require('../utils/errorResponse');
 const Role = require('../models/Role');
 const User = require('../models/User');
+const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 
 /**
  * Middleware to ensure user has a role and load it
@@ -162,6 +163,29 @@ exports.isSuperAdmin = async (req, res, next) => {
     } catch (error) {
         console.error('❌ Error checking SUPER_ADMIN status:', error.message);
         return next(new ErrorResponse('Error checking admin status', 500));
+    }
+};
+
+/**
+ * Middleware: allow only users who have assignee permission (canAssignClient or canAssignCase).
+ * Used for GET /api/users/assignable so only assignees can see the full list for client/case assignment.
+ */
+exports.requireAssignableListAccess = async (req, res, next) => {
+    try {
+        if (!req.userRole) {
+            return next(new ErrorResponse('User role not loaded', 500));
+        }
+        const perms = getAssigneePermissionsForRole(req.userRole);
+        if (!perms.canAssignClient && !perms.canAssignCase) {
+            return next(new ErrorResponse(
+                'You do not have permission to view the assignable users list. Only users with assignee permission (client or cases) can access this.',
+                403
+            ));
+        }
+        next();
+    } catch (error) {
+        console.error('❌ Error checking assignable list access:', error.message);
+        return next(new ErrorResponse('Error checking assignable list access', 500));
     }
 };
 

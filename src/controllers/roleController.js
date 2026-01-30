@@ -7,7 +7,8 @@ const Organization = require('../models/Organization');
 const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
-const { getSuggestedPriority, validateRoleCreation, validatePermissions } = require('../utils/roleUtils');
+const { getSuggestedPriority, validateRoleCreation, validatePermissions, getActionsForModule } = require('../utils/roleUtils');
+const { getAssigneeLimit, getCurrentAssigneeCount, roleHasAssigneePermission, checkAssigneeLimit } = require('../utils/assigneeUtils');
 
 /**
  * @desc    Get suggested priority for new role
@@ -62,6 +63,15 @@ exports.createRole = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse(permissionValidation.error, 400));
     }
 
+    // Only SUPER_ADMIN can grant assignee permission (client/cases)
+    const isSuperAdminForAssignee = creatorRole.priority === 1 && creatorRole.isSystemRole === true;
+    const permissionsWithAssignee = (permissions || []).filter(
+        (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
+    );
+    if (permissionsWithAssignee.length > 0 && !isSuperAdminForAssignee) {
+        return next(new ErrorResponse('Only SUPER_ADMIN can grant assignee permission for client/cases', 403));
+    }
+
     // Check if user can create this role
     const creationValidation = validateRoleCreation(creatorRole, priority);
     if (!creationValidation.valid) {
@@ -110,10 +120,12 @@ exports.createRole = asyncHandler(async (req, res, next) => {
         createdBy: req.user._id
     });
 
-    // Get available modules
-    const modules = await Module.find({ isActive: true })
+    // Get available modules; assignee action only for SUPER_ADMIN (reuse isSuperAdmin from above)
+    const modulesRaw = await Module.find({ isActive: true })
         .select('name displayName description')
-        .sort({ name: 1 });
+        .sort({ name: 1 })
+        .lean();
+    const modules = modulesRaw.map((m) => ({ ...m, actions: getActionsForModule(m.name, { includeAssignee: isSuperAdmin }) }));
 
     res.status(201).json({
         success: true,
@@ -130,7 +142,7 @@ exports.createRole = asyncHandler(async (req, res, next) => {
                 createdBy: role.createdBy,
                 createdAt: role.createdAt
             },
-            modules: modules // Include available modules in response
+            modules
         }
     });
 });
@@ -181,16 +193,19 @@ exports.getRoles = asyncHandler(async (req, res, next) => {
         return roleData;
     }));
 
-    // Get available modules
-    const modules = await Module.find({ isActive: true })
+    // Get available modules; assignee action only for SUPER_ADMIN
+    const isSuperAdmin = currentUserRole && currentUserRole.priority === 1 && currentUserRole.isSystemRole === true;
+    const modulesRaw = await Module.find({ isActive: true })
         .select('name displayName description')
-        .sort({ name: 1 });
+        .sort({ name: 1 })
+        .lean();
+    const modules = modulesRaw.map((m) => ({ ...m, actions: getActionsForModule(m.name, { includeAssignee: isSuperAdmin }) }));
 
     res.status(200).json({
         success: true,
         count: rolesWithCreatedBy.length,
         data: rolesWithCreatedBy,
-        modules: modules // Include available modules in response
+        modules
     });
 });
 
@@ -257,6 +272,31 @@ exports.updateRole = asyncHandler(async (req, res, next) => {
         const permissionValidation = await validatePermissions(permissions);
         if (!permissionValidation.valid) {
             return next(new ErrorResponse(permissionValidation.error, 400));
+        }
+        // Only SUPER_ADMIN can grant assignee permission
+        const isSuperAdminForAssignee = updaterRole.priority === 1 && updaterRole.isSystemRole === true;
+        const permissionsWithAssignee = permissions.filter(
+            (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
+        );
+        if (permissionsWithAssignee.length > 0 && !isSuperAdminForAssignee) {
+            return next(new ErrorResponse('Only SUPER_ADMIN can grant assignee permission for client/cases', 403));
+        }
+        // If adding assignee to this role, enforce plan limit (assignee count after update <= limit)
+        if (permissionsWithAssignee.length > 0) {
+            const org = await Organization.findById(organizationId).select('subscriptionPlan').lean();
+            const limit = getAssigneeLimit(org?.subscriptionPlan || 'free');
+            const currentCount = await getCurrentAssigneeCount(organizationId);
+            const usersWithThisRole = await User.countDocuments({ organization: organizationId, role: role._id, status: { $nin: ['terminated'] } });
+            const roleAlreadyHadAssignee = role.permissions.some(
+                (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
+            );
+            const newAssigneesFromThisRole = roleAlreadyHadAssignee ? 0 : usersWithThisRole;
+            if (currentCount + newAssigneesFromThisRole > limit) {
+                return next(new ErrorResponse(
+                    `Assignee limit reached for your plan (${limit} assignee(s)). Current: ${currentCount}. Upgrade plan to add more assignees.`,
+                    400
+                ));
+            }
         }
     }
 
@@ -359,6 +399,21 @@ exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
     const isSuperAdmin = role.priority === 1 && role.isSystemRole === true;
     if (isSuperAdmin) {
         return next(new ErrorResponse('Cannot assign SUPER_ADMIN role', 403));
+    }
+
+    // If this role has assignee permission, enforce plan assignee limit (only when adding a new assignee)
+    if (roleHasAssigneePermission(role)) {
+        const { current, limit } = await checkAssigneeLimit(organizationId, false);
+        const wasAlreadyAssignee = user.role
+            ? roleHasAssigneePermission(await Role.findById(user.role).lean())
+            : false;
+        const wouldExceed = !wasAlreadyAssignee && current + 1 > limit;
+        if (wouldExceed) {
+            return next(new ErrorResponse(
+                `Assignee limit reached for your plan (${limit} assignee(s)). Upgrade plan to add more assignees.`,
+                400
+            ));
+        }
     }
 
     // Update user's role

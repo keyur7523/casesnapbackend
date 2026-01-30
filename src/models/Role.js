@@ -14,7 +14,7 @@ const PermissionSchema = new mongoose.Schema({
     },
     actions: [{
         type: String,
-        enum: ['create', 'read', 'update', 'delete'],
+        enum: ['create', 'read', 'update', 'delete', 'assignee'],
         required: true
     }]
 }, { _id: false });

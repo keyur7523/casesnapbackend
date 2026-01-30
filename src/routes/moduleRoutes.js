@@ -9,11 +9,11 @@ const {
     deleteModule
 } = require('../controllers/moduleController');
 
-const { protect } = require('../middleware/auth');
+const { protect, protectOptional } = require('../middleware/auth');
 const { loadUserRole } = require('../middleware/rbac');
 
-// Public route - anyone can get modules list (needed for role creation forms)
-router.get('/', getModules);
+// Optional auth: if Bearer token sent and user is SUPER_ADMIN, modules include "assignee" for client/cases
+router.get('/', protectOptional, getModules);
 
 // Protected routes - require authentication
 router.use(protect);

@@ -7,6 +7,7 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const crypto = require('crypto');
 const { sendUserInvitation } = require('../utils/gmailService');
+const { roleHasAssigneePermission, checkAssigneeLimit, getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 
 // @desc      Send user invitation
 // @route     POST /api/users/invite
@@ -76,6 +77,17 @@ exports.sendUserInvitation = asyncHandler(async (req, res, next) => {
 
         if (existingSuperAdmin) {
             return next(new ErrorResponse('SUPER_ADMIN already exists in this organization. Only one SUPER_ADMIN is allowed per organization.', 400));
+        }
+    }
+
+    // If role has assignee permission, enforce plan assignee limit (invited user will become assignee)
+    if (roleHasAssigneePermission(role)) {
+        const { allowed, current, limit } = await checkAssigneeLimit(organizationId, false);
+        if (current >= limit) {
+            return next(new ErrorResponse(
+                `Assignee limit reached for your plan (${limit} assignee(s)). Upgrade plan to invite more users with assignee permission.`,
+                400
+            ));
         }
     }
 
@@ -506,6 +518,51 @@ const canAccessUser = (currentUser, targetUser) => {
     
     return false;
 };
+
+// @desc      Get list of users for assignee dropdown (client/case assignment)
+// @route     GET /api/users/assignable
+// @access    Private (only users with assignee permission: canAssignClient or canAssignCase)
+//            Returns all org users (no priority filter) so assignee can assign to anyone including upper priority
+exports.getAssignableUsers = asyncHandler(async (req, res, next) => {
+    const organizationId = req.user.organization;
+    const { search, limit = 100 } = req.query;
+
+    const query = {
+        organization: organizationId,
+        status: { $nin: ['terminated'] }
+    };
+
+    if (search && search.trim()) {
+        const s = search.trim();
+        query.$or = [
+            { firstName: { $regex: s, $options: 'i' } },
+            { lastName: { $regex: s, $options: 'i' } },
+            { email: { $regex: s, $options: 'i' } }
+        ];
+    }
+
+    const limitNum = Math.min(parseInt(limit, 10) || 100, 200);
+    const users = await User.find(query)
+        .select('_id firstName lastName email role')
+        .populate('role', '_id name')
+        .sort({ firstName: 1, lastName: 1 })
+        .limit(limitNum)
+        .lean();
+
+    const data = users.map((u) => ({
+        id: u._id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        email: u.email,
+        role: u.role ? { id: u.role._id, name: u.role.name } : null
+    }));
+
+    res.status(200).json({
+        success: true,
+        count: data.length,
+        data
+    });
+});
 
 // @desc      Get all users for organization (with filtering and pagination)
 // @route     GET /api/users

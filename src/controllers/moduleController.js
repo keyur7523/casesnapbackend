@@ -4,21 +4,40 @@
 const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
+const { getActionsForModule } = require('../utils/roleUtils');
 
 /**
- * @desc    Get all active modules
+ * @desc    Get all active modules (with allowed actions). Assignee action only if current user is SUPER_ADMIN.
  * @route   GET /api/modules
- * @access  Public (for role creation forms)
+ * @access  Public; send Bearer token to get assignee for SUPER_ADMIN only
  */
 exports.getModules = asyncHandler(async (req, res, next) => {
+    let includeAssignee = false;
+    if (req.user) {
+        await req.user.populate({ path: 'role', select: 'priority isSystemRole' });
+        const role = req.user.role;
+        if (role && role.priority === 1 && role.isSystemRole === true) {
+            includeAssignee = true;
+        }
+    }
+
     const modules = await Module.find({ isActive: true })
-        .select('name displayName description')
-        .sort({ name: 1 });
+        .select('_id name displayName description')
+        .sort({ name: 1 })
+        .lean();
+
+    const data = modules.map((m) => ({
+        _id: m._id,
+        name: m.name,
+        displayName: m.displayName,
+        description: m.description,
+        actions: getActionsForModule(m.name, { includeAssignee })
+    }));
 
     res.status(200).json({
         success: true,
-        count: modules.length,
-        data: modules
+        count: data.length,
+        data
     });
 });
 

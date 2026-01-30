@@ -54,6 +54,27 @@ exports.validateRoleCreation = (userRole, newPriority) => {
     return { valid: true };
 };
 
+/** Base actions for all modules; assignee only for client and cases */
+const MODULES_WITH_ASSIGNEE = ['client', 'cases'];
+const BASE_ACTIONS = ['create', 'read', 'update', 'delete'];
+const ASSIGNEE_ACTION = 'assignee';
+
+/**
+ * Get allowed actions for a module (for API response).
+ * Assignee is only included for client/cases when includeAssignee is true (SUPER_ADMIN only).
+ * @param {string} moduleName - e.g. 'client', 'cases', 'role', 'user'
+ * @param {{ includeAssignee?: boolean }} [options] - includeAssignee: true only for SUPER_ADMIN
+ * @returns {string[]}
+ */
+exports.getActionsForModule = (moduleName, options = {}) => {
+    const name = (moduleName || '').toLowerCase().trim();
+    const includeAssignee = options.includeAssignee === true;
+    if (MODULES_WITH_ASSIGNEE.includes(name) && includeAssignee) {
+        return [...BASE_ACTIONS, ASSIGNEE_ACTION];
+    }
+    return [...BASE_ACTIONS];
+};
+
 /**
  * Get all active modules from database
  * @returns {Promise<Array>} Array of module names
@@ -83,7 +104,8 @@ exports.validatePermissions = async (permissions) => {
 
     // Get valid modules from database
     const validModules = await exports.getActiveModules();
-    const validActions = ['create', 'read', 'update', 'delete'];
+    const baseActions = BASE_ACTIONS;
+    const modulesWithAssignee = MODULES_WITH_ASSIGNEE;
 
     const seenModules = new Set();
 
@@ -116,12 +138,18 @@ exports.validatePermissions = async (permissions) => {
             };
         }
 
+        const validActions = modulesWithAssignee.includes(moduleName)
+            ? [...baseActions, 'assignee']
+            : baseActions;
+
         // Validate each action
         for (const action of permission.actions) {
             if (!validActions.includes(action)) {
                 return {
                     valid: false,
-                    error: `Invalid action: ${action} for module ${permission.module}. Must be one of: ${validActions.join(', ')}`
+                    error: action === 'assignee'
+                        ? `Action 'assignee' is only allowed for client and cases modules`
+                        : `Invalid action: ${action} for module ${permission.module}. Must be one of: ${validActions.join(', ')}`
                 };
             }
         }

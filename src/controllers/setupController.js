@@ -7,6 +7,7 @@ const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const jwt = require('jsonwebtoken'); // For generating tokens
+const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 
 // @desc      Initialize Organization and Super Admin
 // @route     POST /api/setup/initialize
@@ -225,6 +226,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
                 isSystemRole: superAdminRole.isSystemRole,
                 description: superAdminRole.description
             },
+            // Frontend: show assignee dropdown for client/case create only when true (SUPER_ADMIN has both)
+            assigneePermissions: getAssigneePermissionsForRole(superAdminRole),
             organizationId: organization._id
         },
         organization: {

@@ -25,7 +25,7 @@ const ClientSchema = new mongoose.Schema({
     // Contact Information
     email: {
         type: String,
-        required: [true, 'Please add an email'],
+        required: false, // Email is optional for clients
         lowercase: true,
         trim: true,
         match: [
@@ -92,9 +92,25 @@ const ClientSchema = new mongoose.Schema({
         type: String,
         match: [/^\d{12}$/, 'Aadhar card number must be 12 digits']
     },
+    // Aadhar card image metadata (stored as URL/reference, actual file handled by storage)
+    aadharImageUrl: {
+        type: String,
+        required: false,
+        trim: true
+    },
+    aadharImageSize: {
+        type: Number, // Size in bytes
+        required: false
+    },
     panCardNumber: {
         type: String,
         match: [/^[A-Z]{5}[0-9]{4}[A-Z]{1}$/, 'PAN card number must be in valid format']
+    },
+    // Financial Information
+    fees: {
+        type: Number,
+        required: [true, 'Please add client fees'],
+        min: [0, 'Fees cannot be negative']
     },
     // Organization Reference
     organization: {
@@ -112,7 +128,8 @@ const ClientSchema = new mongoose.Schema({
     // Status
     status: {
         type: String,
-        enum: ['active', 'inactive', 'archived'],
+        // 'prospect' added as requested, 'archived' kept for internal soft‑delete/archive handling
+        enum: ['active', 'inactive', 'prospect', 'archived'],
         default: 'active',
         index: true
     },
