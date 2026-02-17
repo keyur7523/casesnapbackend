@@ -35,7 +35,6 @@ exports.createClient = asyncHandler(async (req, res, next) => {
         panCardNumber,
         fees,
         aadharImageUrl,
-        aadharImageSize,
         assignedTo,
         notes
     } = req.body;
@@ -43,22 +42,6 @@ exports.createClient = asyncHandler(async (req, res, next) => {
     // Validate required fields
     if (!firstName || !lastName || !phone || fees === undefined) {
         return next(new ErrorResponse('First name, last name, phone, and fees are required', 400));
-    }
-
-    // Validate Aadhar image size if provided
-    // Max size = 1 MB (1048576 bytes), warning threshold = 500 KB (512000 bytes)
-    let aadharSizeWarning = false;
-    if (aadharImageSize !== undefined && aadharImageSize !== null) {
-        const maxSize = 1024 * 1024; // 1 MB
-        const warnSize = 500 * 1024; // ~500 KB
-
-        if (aadharImageSize > maxSize) {
-            return next(new ErrorResponse('Aadhar card image size must be less than or equal to 1 MB', 400));
-        }
-
-        if (aadharImageSize > warnSize) {
-            aadharSizeWarning = true;
-        }
     }
 
     // Check if client with same email exists in organization
@@ -100,7 +83,6 @@ exports.createClient = asyncHandler(async (req, res, next) => {
         panCardNumber,
         fees,
         aadharImageUrl,
-        aadharImageSize,
         assignedTo: effectiveAssignedTo,
         organization: organizationId,
         createdBy: userId,
@@ -145,8 +127,7 @@ exports.createClient = asyncHandler(async (req, res, next) => {
     res.status(201).json({
         success: true,
         message: 'Client created successfully',
-        data: client,
-        warning: aadharSizeWarning ? 'Aadhar card image size is greater than 500 KB' : undefined
+        data: client
     });
 });
 
@@ -244,9 +225,12 @@ exports.getClient = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Client not found', 404));
     }
 
+    const data = client.toObject ? client.toObject() : client;
+    data.aadharImageUrl = client.aadharImageUrl ?? null;
+
     res.status(200).json({
         success: true,
-        data: client
+        data
     });
 });
 
@@ -284,14 +268,6 @@ exports.updateClient = asyncHandler(async (req, res, next) => {
         }
     }
 
-    // Validate Aadhar image size on update if provided
-    if (req.body.aadharImageSize !== undefined && req.body.aadharImageSize !== null) {
-        const maxSize = 1024 * 1024; // 1 MB
-        if (req.body.aadharImageSize > maxSize) {
-            return next(new ErrorResponse('Aadhar card image size must be less than or equal to 1 MB', 400));
-        }
-    }
-
     // Changing assignedTo: SUPER_ADMIN can always assign; others need 'assignee' on client
     if (req.body.assignedTo !== undefined && String(req.body.assignedTo) !== String(client.assignedTo)) {
         if (!req.userRole || !canAssignModule(req.userRole, 'client')) {
@@ -305,7 +281,7 @@ exports.updateClient = asyncHandler(async (req, res, next) => {
         'streetAddress', 'city', 'province', 'postalCode', 'country',
         'dateOfBirth', 'gender', 'occupation', 'companyName',
         'aadharCardNumber', 'panCardNumber', 'fees',
-        'aadharImageUrl', 'aadharImageSize',
+        'aadharImageUrl',
         'assignedTo', 'status', 'notes'
     ];
 

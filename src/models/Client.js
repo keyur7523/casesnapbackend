@@ -92,15 +92,11 @@ const ClientSchema = new mongoose.Schema({
         type: String,
         match: [/^\d{12}$/, 'Aadhar card number must be 12 digits']
     },
-    // Aadhar card image metadata (stored as URL/reference, actual file handled by storage)
+    // Aadhar card image (URL from upload API)
     aadharImageUrl: {
         type: String,
         required: false,
         trim: true
-    },
-    aadharImageSize: {
-        type: Number, // Size in bytes
-        required: false
     },
     panCardNumber: {
         type: String,

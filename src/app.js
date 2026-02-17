@@ -13,7 +13,9 @@ const moduleRoutes = require('./routes/moduleRoutes');
 const userRoutes = require('./routes/userRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const exampleRoutes = require('./routes/exampleRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 const errorHandler = require('./middleware/error');
+const path = require('path');
 const { initializeEmailService } = require('./utils/gmailService');
 
 const app = express();
@@ -119,6 +121,11 @@ app.use('/api/modules', moduleRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/example', exampleRoutes);
+app.use('/api/upload', uploadRoutes);
+
+// Serve uploaded files
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
+
 app.use(errorHandler);
 
 
