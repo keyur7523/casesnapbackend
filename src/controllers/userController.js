@@ -80,12 +80,12 @@ exports.sendUserInvitation = asyncHandler(async (req, res, next) => {
         }
     }
 
-    // If role has assignee permission, enforce plan assignee limit (invited user will become assignee)
+    // Enforce assignee limit for ALL admins including SUPER_ADMIN (invited user will become assignee)
     if (roleHasAssigneePermission(role)) {
         const { allowed, current, limit } = await checkAssigneeLimit(organizationId, false);
-        if (current >= limit) {
+        if (!allowed) {
             return next(new ErrorResponse(
-                `Assignee limit reached for your plan (${limit} assignee(s)). Upgrade plan to invite more users with assignee permission.`,
+                `Assignee limit reached for your plan (${limit} assignee(s)). Current assignees: ${current}. Upgrade plan to invite more users with assignee permission.`,
                 400
             ));
         }
@@ -782,6 +782,20 @@ exports.updateUser = asyncHandler(async (req, res, next) => {
         });
         if (!role) {
             return next(new ErrorResponse('Role not found or does not belong to your organization', 404));
+        }
+        // Enforce assignee limit for ALL admins including SUPER_ADMIN (plan limit applies to organization)
+        if (roleHasAssigneePermission(role)) {
+            const currentRoleId = user.role ? (typeof user.role === 'object' && user.role._id ? user.role._id : user.role) : null;
+            const wasAlreadyAssignee = currentRoleId
+                ? roleHasAssigneePermission(await Role.findById(currentRoleId).select('permissions').lean())
+                : false;
+            const { allowed, current, limit } = await checkAssigneeLimit(organizationId, wasAlreadyAssignee);
+            if (!allowed) {
+                return next(new ErrorResponse(
+                    `Assignee limit reached for your plan (${limit} assignee(s)). Current assignees: ${current}. Upgrade plan to add more assignees.`,
+                    400
+                ));
+            }
         }
         user.role = roleId;
     }

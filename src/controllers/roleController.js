@@ -8,7 +8,7 @@ const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const { getSuggestedPriority, validateRoleCreation, validatePermissions, getActionsForModule } = require('../utils/roleUtils');
-const { getAssigneeLimit, getCurrentAssigneeCount, roleHasAssigneePermission, checkAssigneeLimit } = require('../utils/assigneeUtils');
+const { getAssigneeLimit, getCurrentAssigneeCount, getAssigneeRoleCount, roleHasAssigneePermission, checkAssigneeLimit } = require('../utils/assigneeUtils');
 
 /**
  * @desc    Get suggested priority for new role
@@ -70,6 +70,19 @@ exports.createRole = asyncHandler(async (req, res, next) => {
     );
     if (permissionsWithAssignee.length > 0 && !isSuperAdminForAssignee) {
         return next(new ErrorResponse('Only SUPER_ADMIN can grant assignee permission for client/cases', 403));
+    }
+
+    // Enforce assignee limit when creating role with assignee permission (applies to SUPER_ADMIN too)
+    if (permissionsWithAssignee.length > 0) {
+        const org = await Organization.findById(organizationId).select('subscriptionPlan').lean();
+        const limit = getAssigneeLimit(org?.subscriptionPlan || 'free');
+        const currentAssigneeRoleCount = await getAssigneeRoleCount(organizationId);
+        if (currentAssigneeRoleCount >= limit) {
+            return next(new ErrorResponse(
+                `Assignee limit reached for your plan (${limit} assignee role(s)). Current: ${currentAssigneeRoleCount}. Upgrade plan to create more roles with assignee permission.`,
+                400
+            ));
+        }
     }
 
     // Check if user can create this role
@@ -273,23 +286,37 @@ exports.updateRole = asyncHandler(async (req, res, next) => {
         if (!permissionValidation.valid) {
             return next(new ErrorResponse(permissionValidation.error, 400));
         }
-        // Only SUPER_ADMIN can grant assignee permission
+        // Only SUPER_ADMIN can ADD assignee permission. Allow updating CRUD if role already had assignee.
         const isSuperAdminForAssignee = updaterRole.priority === 1 && updaterRole.isSystemRole === true;
         const permissionsWithAssignee = permissions.filter(
             (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
         );
-        if (permissionsWithAssignee.length > 0 && !isSuperAdminForAssignee) {
+        const roleAlreadyHadAssignee = role.permissions.some(
+            (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
+        );
+        const isAddingAssignee = permissionsWithAssignee.length > 0 && !roleAlreadyHadAssignee;
+        if (isAddingAssignee && !isSuperAdminForAssignee) {
             return next(new ErrorResponse('Only SUPER_ADMIN can grant assignee permission for client/cases', 403));
         }
-        // If adding assignee to this role, enforce plan limit (assignee count after update <= limit)
+        // If adding assignee to this role, enforce plan limit (both role count and user count)
         if (permissionsWithAssignee.length > 0) {
             const org = await Organization.findById(organizationId).select('subscriptionPlan').lean();
             const limit = getAssigneeLimit(org?.subscriptionPlan || 'free');
+
+            // Block if adding assignee to a new role would exceed assignee ROLE limit
+            if (!roleAlreadyHadAssignee) {
+                const currentAssigneeRoleCount = await getAssigneeRoleCount(organizationId);
+                if (currentAssigneeRoleCount >= limit) {
+                    return next(new ErrorResponse(
+                        `Assignee limit reached for your plan (${limit} assignee role(s)). Current: ${currentAssigneeRoleCount}. Upgrade plan to add assignee permission to more roles.`,
+                        400
+                    ));
+                }
+            }
+
+            // Block if users with this role would exceed assignee USER limit
             const currentCount = await getCurrentAssigneeCount(organizationId);
             const usersWithThisRole = await User.countDocuments({ organization: organizationId, role: role._id, status: { $nin: ['terminated'] } });
-            const roleAlreadyHadAssignee = role.permissions.some(
-                (p) => (p.module === 'client' || p.module === 'cases') && (p.actions || []).includes('assignee')
-            );
             const newAssigneesFromThisRole = roleAlreadyHadAssignee ? 0 : usersWithThisRole;
             if (currentCount + newAssigneesFromThisRole > limit) {
                 return next(new ErrorResponse(
@@ -401,16 +428,16 @@ exports.assignRoleToUser = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Cannot assign SUPER_ADMIN role', 403));
     }
 
-    // If this role has assignee permission, enforce plan assignee limit (only when adding a new assignee)
+    // Enforce assignee limit for ALL users including SUPER_ADMIN (plan limit applies to organization)
     if (roleHasAssigneePermission(role)) {
-        const { current, limit } = await checkAssigneeLimit(organizationId, false);
-        const wasAlreadyAssignee = user.role
-            ? roleHasAssigneePermission(await Role.findById(user.role).lean())
+        const currentRoleId = user.role ? (typeof user.role === 'object' && user.role._id ? user.role._id : user.role) : null;
+        const wasAlreadyAssignee = currentRoleId
+            ? roleHasAssigneePermission(await Role.findById(currentRoleId).select('permissions').lean())
             : false;
-        const wouldExceed = !wasAlreadyAssignee && current + 1 > limit;
-        if (wouldExceed) {
+        const { allowed, current, limit } = await checkAssigneeLimit(organizationId, wasAlreadyAssignee);
+        if (!allowed) {
             return next(new ErrorResponse(
-                `Assignee limit reached for your plan (${limit} assignee(s)). Upgrade plan to add more assignees.`,
+                `Assignee limit reached for your plan (${limit} assignee(s)). Current assignees: ${current}. Upgrade plan to add more assignees.`,
                 400
             ));
         }

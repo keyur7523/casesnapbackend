@@ -13,14 +13,26 @@ const ASSIGNEE_LIMITS = {
     popular: 10
 };
 
+/** Map display names / variations to plan keys */
+const PLAN_ALIASES = {
+    free: 'free',
+    base: 'base',
+    popular: 'popular',
+    '14 days free trial': 'free',
+    '14-day free trial': 'free',
+    trial: 'free',
+    professional: 'popular'
+};
+
 /**
  * Get max assignees allowed for a subscription plan
- * @param {string} plan - 'free' | 'base' | 'popular'
+ * @param {string} plan - 'free' | 'base' | 'popular' (or display name like "14 Days Free Trial")
  * @returns {number}
  */
 exports.getAssigneeLimit = (plan) => {
-    const key = (plan || 'free').toLowerCase().trim();
-    return ASSIGNEE_LIMITS[key] != null ? ASSIGNEE_LIMITS[key] : ASSIGNEE_LIMITS.free;
+    const key = ((plan || 'free') + '').toLowerCase().trim();
+    const mapped = PLAN_ALIASES[key] || key;
+    return ASSIGNEE_LIMITS[mapped] != null ? ASSIGNEE_LIMITS[mapped] : ASSIGNEE_LIMITS.free;
 };
 
 /** SUPER_ADMIN can always assign client/case; plan limits (2/4/10) apply only to other assignees */
@@ -65,6 +77,27 @@ exports.canAssignModule = (userRole, moduleName) => {
     if (!userRole) return false;
     if (isSuperAdminRole(userRole)) return true;
     return userRole.hasPermission ? userRole.hasPermission(moduleName, 'assignee') : false;
+};
+
+/**
+ * Count roles that have assignee permission (for plan limit when creating roles).
+ * SUPER_ADMIN role is excluded. Used to block creating too many assignee roles.
+ * @param {string} organizationId
+ * @returns {Promise<number>}
+ */
+exports.getAssigneeRoleCount = async (organizationId) => {
+    return Role.countDocuments({
+        organization: organizationId,
+        $and: [
+            {
+                $or: [
+                    { 'permissions': { $elemMatch: { module: 'client', actions: 'assignee' } } },
+                    { 'permissions': { $elemMatch: { module: 'cases', actions: 'assignee' } } }
+                ]
+            },
+            { $or: [{ priority: { $ne: 1 } }, { isSystemRole: false }] }
+        ]
+    });
 };
 
 /**
