@@ -6,6 +6,7 @@ const asyncHandler = require('../middleware/asyncHandler'); // We'll create this
 const ErrorResponse = require('../utils/errorResponse'); // We'll create this too
 const jwt = require('jsonwebtoken');
 const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
+const { getEffectivePermissionsForRole } = require('../utils/roleUtils');
 
 // @desc      Login user (Admin or Employee)
 // @route     POST /api/auth/login
@@ -172,11 +173,12 @@ exports.login = asyncHandler(async (req, res, next) => {
 
         // Add role details if available
         if (user.role && typeof user.role === 'object' && user.role.name) {
+            const permissions = await getEffectivePermissionsForRole(user.role);
             responseData.user.role = {
                 id: user.role._id,
                 name: user.role.name,
                 priority: user.role.priority,
-                permissions: user.role.permissions || [],
+                permissions,
                 isSystemRole: user.role.isSystemRole || false,
                 description: user.role.description || null
             };

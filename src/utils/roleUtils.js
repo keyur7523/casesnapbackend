@@ -76,6 +76,31 @@ exports.getActionsForModule = (moduleName, options = {}) => {
 };
 
 /**
+ * Get effective permissions for a role to return to frontend.
+ * SUPER_ADMIN always gets full permissions for all active modules (even if stored permissions
+ * are empty, e.g. from setup when Module collection was empty). Other roles use stored permissions.
+ * @param {Object} role - Role object with priority, isSystemRole, permissions
+ * @returns {Promise<Array>} Permissions array for frontend
+ */
+exports.getEffectivePermissionsForRole = async (role) => {
+    if (!role) return [];
+    const isSuperAdmin = role.priority === 1 && role.isSystemRole === true;
+    if (isSuperAdmin) {
+        const moduleNames = await exports.getActiveModules();
+        const DEFAULT_MODULES = ['client', 'cases', 'role', 'user'];
+        const modules = moduleNames.length > 0 ? moduleNames : DEFAULT_MODULES;
+        return modules.map(name => {
+            const baseActions = ['create', 'read', 'update', 'delete'];
+            const actions = MODULES_WITH_ASSIGNEE.includes(name)
+                ? [...baseActions, 'assignee']
+                : baseActions;
+            return { module: name, actions };
+        });
+    }
+    return role.permissions || [];
+};
+
+/**
  * Get all active modules from database
  * @returns {Promise<Array>} Array of module names
  */

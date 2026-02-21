@@ -8,6 +8,8 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const jwt = require('jsonwebtoken'); // For generating tokens
 const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
+const { initializeDefaultModules } = require('../utils/initializeModules');
+const { getEffectivePermissionsForRole } = require('../utils/roleUtils');
 
 // @desc      Initialize Organization and Super Admin
 // @route     POST /api/setup/initialize
@@ -136,9 +138,20 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     // -----------------------------------------------------------
     console.log('👑 Creating SUPER_ADMIN role...');
     
+    // Ensure default modules exist (handles case when MongoDB was dropped/cleared
+    // while server was running - initializeDefaultModules only runs on first DB connect)
+    await initializeDefaultModules();
+    
     // Get all active modules dynamically from database
-    const activeModules = await Module.find({ isActive: true }).select('name');
+    let activeModules = await Module.find({ isActive: true }).select('name');
     console.log('📦 Active modules found:', activeModules.map(m => m.name));
+    
+    // Fallback: if no modules exist (e.g. DB was freshly dropped), use default module names
+    const DEFAULT_MODULE_NAMES = ['client', 'cases', 'role', 'user'];
+    if (activeModules.length === 0) {
+        console.log('⚠️ No modules in DB, using default module names for SUPER_ADMIN permissions');
+        activeModules = DEFAULT_MODULE_NAMES.map(name => ({ name }));
+    }
     
     // Build permissions dynamically based on available modules
     const permissions = activeModules.map(module => ({
@@ -209,6 +222,8 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
     // Populate role for response
     await superAdminUser.populate('role', 'name priority permissions isSystemRole');
 
+    const effectivePermissions = await getEffectivePermissionsForRole(superAdminRole);
+
     res.status(201).json({
         success: true,
         message: 'Organization and Super Admin initialized successfully.',
@@ -222,7 +237,7 @@ exports.initializeSetup = asyncHandler(async (req, res, next) => {
                 id: superAdminRole._id,
                 name: superAdminRole.name,
                 priority: superAdminRole.priority,
-                permissions: superAdminRole.permissions,
+                permissions: effectivePermissions,
                 isSystemRole: superAdminRole.isSystemRole,
                 description: superAdminRole.description
             },

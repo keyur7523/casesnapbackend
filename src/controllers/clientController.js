@@ -7,6 +7,8 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const { canAssignModule, getAssigneeUserIdsForModule } = require('../utils/assigneeUtils');
 
+const canViewAllClients = (userRole) => canAssignModule(userRole, 'client');
+
 /**
  * @desc    Create a new client
  * @route   POST /api/clients
@@ -57,10 +59,14 @@ exports.createClient = asyncHandler(async (req, res, next) => {
         }
     }
 
-    // Setting assignedTo to someone other than self: SUPER_ADMIN can always assign; others need 'assignee' on client
-    const effectiveAssignedTo = assignedTo || userId;
-    if (effectiveAssignedTo !== userId && req.userRole && !canAssignModule(req.userRole, 'client')) {
-        return next(new ErrorResponse('You do not have permission to assign clients to other users', 403));
+    // Do not auto-assign to creator.
+    // If assignedTo is explicitly provided, only assignees (or SUPER_ADMIN) can assign to others.
+    let effectiveAssignedTo = null;
+    if (assignedTo !== undefined && assignedTo !== null && String(assignedTo).trim() !== '') {
+        effectiveAssignedTo = assignedTo;
+        if (String(effectiveAssignedTo) !== String(userId) && req.userRole && !canAssignModule(req.userRole, 'client')) {
+            return next(new ErrorResponse('You do not have permission to assign clients to other users', 403));
+        }
     }
 
     // Create client
@@ -138,6 +144,7 @@ exports.createClient = asyncHandler(async (req, res, next) => {
  */
 exports.getClients = asyncHandler(async (req, res, next) => {
     const organizationId = req.user.organization;
+    const userId = req.user._id;
     const {
         page = 1,
         limit = 10,
@@ -164,6 +171,11 @@ exports.getClients = asyncHandler(async (req, res, next) => {
 
     if (assignedTo) {
         query.assignedTo = assignedTo;
+    }
+
+    // Visibility rule: users without assignee permission can only view their assigned clients.
+    if (!canViewAllClients(req.userRole)) {
+        query.assignedTo = userId;
     }
 
     if (search) {
@@ -211,6 +223,7 @@ exports.getClients = asyncHandler(async (req, res, next) => {
 exports.getClient = asyncHandler(async (req, res, next) => {
     const { id } = req.params;
     const organizationId = req.user.organization;
+    const userId = req.user._id;
 
     const client = await Client.findOne({
         _id: id,
@@ -223,6 +236,11 @@ exports.getClient = asyncHandler(async (req, res, next) => {
 
     if (!client) {
         return next(new ErrorResponse('Client not found', 404));
+    }
+
+    // Visibility rule on detail endpoint as well.
+    if (!canViewAllClients(req.userRole) && String(client.assignedTo) !== String(userId)) {
+        return next(new ErrorResponse('You do not have permission to view this client', 403));
     }
 
     const data = client.toObject ? client.toObject() : client;
