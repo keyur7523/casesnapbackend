@@ -161,7 +161,8 @@ exports.getClients = asyncHandler(async (req, res, next) => {
         organization: organizationId
     };
 
-    if (!includeDeleted || includeDeleted === 'false') {
+    const showDeleted = includeDeleted === true || includeDeleted === 'true';
+    if (!showDeleted) {
         query.deletedAt = null;
     }
 
@@ -193,8 +194,12 @@ exports.getClients = asyncHandler(async (req, res, next) => {
     const limitNum = parseInt(limit);
     const skip = (pageNum - 1) * limitNum;
 
+    const findOptions = showDeleted ? { includeDeleted: true } : {};
+    const findQuery = Client.find(query).setOptions(findOptions);
+    const countQuery = Client.countDocuments(query).setOptions(findOptions);
+
     // Execute query
-    const clients = await Client.find(query)
+    const clients = await findQuery
         .populate('assignedTo', 'firstName lastName email')
         .populate('createdBy', 'firstName lastName email')
         .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
@@ -203,7 +208,7 @@ exports.getClients = asyncHandler(async (req, res, next) => {
         .lean({ virtuals: true });
 
     // Get total count
-    const total = await Client.countDocuments(query);
+    const total = await countQuery;
 
     res.status(200).json({
         success: true,
@@ -374,6 +379,7 @@ exports.deleteClient = asyncHandler(async (req, res, next) => {
 exports.restoreClient = asyncHandler(async (req, res, next) => {
     const { id } = req.params;
     const organizationId = req.user.organization;
+    const userId = req.user._id;
 
     const client = await Client.findOne({
         _id: id,
@@ -383,6 +389,11 @@ exports.restoreClient = asyncHandler(async (req, res, next) => {
 
     if (!client) {
         return next(new ErrorResponse('Deleted client not found', 404));
+    }
+
+    // Visibility: non-assignees can only restore clients assigned to them
+    if (!canViewAllClients(req.userRole) && String(client.assignedTo) !== String(userId)) {
+        return next(new ErrorResponse('You do not have permission to restore this client', 403));
     }
 
     client.deletedAt = null;
