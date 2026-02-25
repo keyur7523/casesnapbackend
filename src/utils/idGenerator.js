@@ -55,6 +55,14 @@ const generateClientId = () => {
 };
 
 /**
+ * Generate case ID
+ * @returns {String} case_xxxxx
+ */
+const generateCaseId = () => {
+    return generateCustomId('case');
+};
+
+/**
  * Generate module ID
  * @returns {String} module_xxxxx
  */
@@ -89,6 +97,7 @@ module.exports = {
     generateRoleId,
     generateEmployeeId,
     generateClientId,
+    generateCaseId,
     generateModuleId,
     generateNotificationId,
     isValidCustomId,
