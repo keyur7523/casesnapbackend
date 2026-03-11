@@ -7,6 +7,7 @@ const Notification = require('../models/Notification');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const { canAssignModule, getAssigneeUserIdsForModule } = require('../utils/assigneeUtils');
+const { sendEncryptedJson } = require('../utils/responseEncryption');
 
 const canViewAllCases = (userRole) => canAssignModule(userRole, 'cases');
 
@@ -224,7 +225,7 @@ exports.getCases = asyncHandler(async (req, res, next) => {
 
     const total = await countQuery;
 
-    res.status(200).json({
+    sendEncryptedJson(res, 200, {
         success: true,
         count: cases.length,
         total,
@@ -264,10 +265,7 @@ exports.getCase = asyncHandler(async (req, res, next) => {
 
     const data = caseDoc.toObject ? caseDoc.toObject() : caseDoc;
 
-    res.status(200).json({
-        success: true,
-        data
-    });
+    sendEncryptedJson(res, 200, { success: true, data });
 });
 
 /**

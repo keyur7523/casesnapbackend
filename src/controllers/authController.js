@@ -5,8 +5,11 @@ const Employee = require('../models/Employee'); // Import Employee model
 const asyncHandler = require('../middleware/asyncHandler'); // We'll create this next for error handling
 const ErrorResponse = require('../utils/errorResponse'); // We'll create this too
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 const { getEffectivePermissionsForRole } = require('../utils/roleUtils');
+const { validateOrganizationSubscription } = require('../utils/subscriptionUtils');
+const { sendPasswordResetEmail } = require('../utils/gmailService');
 
 // @desc      Login user (Admin or Employee)
 // @route     POST /api/auth/login
@@ -32,14 +35,14 @@ exports.login = asyncHandler(async (req, res, next) => {
             path: 'role',
             select: 'name priority permissions isSystemRole description'
         });
-        await user.populate('organization', 'companyName companyEmail _id subscriptionPlan');
+        await user.populate('organization', 'companyName companyEmail _id subscriptionPlan subscriptionStatus subscriptionExpiresAt');
     }
 
     // 3. If no admin user found, try to find employee
     if (!user) {
         user = await Employee.findOne({ email: email.toLowerCase() })
             .select('+password')
-            .populate('organization', 'companyName companyEmail _id subscriptionPlan');
+            .populate('organization', 'companyName companyEmail _id subscriptionPlan subscriptionStatus subscriptionExpiresAt');
         userType = 'employee';
     }
 
@@ -71,6 +74,12 @@ exports.login = asyncHandler(async (req, res, next) => {
         if (user.status !== 'approved') {
             return next(new ErrorResponse('Your account is pending approval. Please wait for admin approval before logging in.', 401));
         }
+    }
+
+    // 6c. Subscription validation (blocked if expired/inactive/cancelled)
+    const subscriptionCheck = validateOrganizationSubscription(user.organization);
+    if (!subscriptionCheck.valid) {
+        return next(new ErrorResponse(subscriptionCheck.reason, 403));
     }
 
     // 7. Create token with appropriate role
@@ -133,6 +142,8 @@ exports.login = asyncHandler(async (req, res, next) => {
                 status: user.status,
                 role: 'employee',
                 subscriptionPlan: user.organization?.subscriptionPlan || null,
+                subscriptionStatus: user.organization?.subscriptionStatus || 'active',
+                subscriptionExpiresAt: user.organization?.subscriptionExpiresAt || null,
                 createdAt: user.createdAt
             }
         });
@@ -167,7 +178,9 @@ exports.login = asyncHandler(async (req, res, next) => {
                 lastName: user.lastName,
                 email: user.email,
                 organizationId: user.organization?._id || user.organization || null,
-                subscriptionPlan: user.organization?.subscriptionPlan || null
+                subscriptionPlan: user.organization?.subscriptionPlan || null,
+                subscriptionStatus: user.organization?.subscriptionStatus || 'active',
+                subscriptionExpiresAt: user.organization?.subscriptionExpiresAt || null
             }
         };
 
@@ -190,6 +203,144 @@ exports.login = asyncHandler(async (req, res, next) => {
 
         res.status(200).json(responseData);
     }
+});
+
+// @desc      Forgot password (send reset email)
+// @route     POST /api/auth/forgot-password
+// @access    Public
+exports.forgotPassword = asyncHandler(async (req, res, next) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return next(new ErrorResponse('Email is required', 400));
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    let accountType = 'user';
+    let account = await User.findOne({ email: normalizedEmail }).select('+resetPasswordToken +resetPasswordExpire');
+
+    if (!account) {
+        account = await Employee.findOne({ email: normalizedEmail }).select('+resetPasswordToken +resetPasswordExpire');
+        accountType = 'employee';
+    }
+
+    if (!account) {
+        return next(new ErrorResponse('No account found with this email', 404));
+    }
+
+    const resetToken = account.getResetPasswordToken();
+    await account.save({ validateBeforeSave: false });
+
+    const appUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:3000';
+    const resetLink = `${appUrl.replace(/\/$/, '')}/reset-password?token=${resetToken}`;
+
+    const fullName = `${account.firstName || ''} ${account.lastName || ''}`.trim();
+    const organizationName = accountType === 'user'
+        ? 'CaseSnap'
+        : (account.organization?.companyName || 'CaseSnap');
+
+    const emailResult = await sendPasswordResetEmail({
+        to: account.email,
+        fullName: fullName || 'User',
+        resetLink,
+        organizationName
+    });
+
+    if (!emailResult.success) {
+        account.resetPasswordToken = undefined;
+        account.resetPasswordExpire = undefined;
+        await account.save({ validateBeforeSave: false });
+        return next(new ErrorResponse(emailResult.message || 'Failed to send reset email', 500));
+    }
+
+    res.status(200).json({
+        success: true,
+        message: 'Password reset link sent to your email',
+        data: {
+            email: account.email
+        }
+    });
+});
+
+// @desc      Reset password via token
+// @route     PUT /api/auth/reset-password/:resetToken
+// @access    Public
+exports.resetPassword = asyncHandler(async (req, res, next) => {
+    const { resetToken } = req.params;
+    const { password, confirmPassword } = req.body;
+
+    if (!password) {
+        return next(new ErrorResponse('New password is required', 400));
+    }
+
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+        return next(new ErrorResponse('Password and confirm password do not match', 400));
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+    let account = await User.findOne({
+        resetPasswordToken: hashedToken,
+        resetPasswordExpire: { $gt: Date.now() }
+    }).select('+password +resetPasswordToken +resetPasswordExpire');
+
+    if (!account) {
+        account = await Employee.findOne({
+            resetPasswordToken: hashedToken,
+            resetPasswordExpire: { $gt: Date.now() }
+        }).select('+password +resetPasswordToken +resetPasswordExpire');
+    }
+
+    if (!account) {
+        return next(new ErrorResponse('Reset token is invalid or expired', 400));
+    }
+
+    account.password = password;
+    account.resetPasswordToken = undefined;
+    account.resetPasswordExpire = undefined;
+    await account.save();
+
+    res.status(200).json({
+        success: true,
+        message: 'Password reset successful. Please login with your new password.'
+    });
+});
+
+// @desc      Change password for logged-in user
+// @route     PUT /api/auth/change-password
+// @access    Private
+exports.changePassword = asyncHandler(async (req, res, next) => {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+        return next(new ErrorResponse('Current password and new password are required', 400));
+    }
+
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+        return next(new ErrorResponse('New password and confirm password do not match', 400));
+    }
+
+    const isEmployee = req.userType === 'employee';
+    const AccountModel = isEmployee ? Employee : User;
+
+    const account = await AccountModel.findById(req.user._id).select('+password');
+    if (!account) {
+        return next(new ErrorResponse('User not found', 404));
+    }
+
+    const isMatch = await account.matchPassword(currentPassword);
+    if (!isMatch) {
+        return next(new ErrorResponse('Current password is incorrect', 400));
+    }
+
+    account.password = newPassword;
+    await account.save();
+
+    res.status(200).json({
+        success: true,
+        message: 'Password changed successfully'
+    });
 });
 
 // @desc      Logout user

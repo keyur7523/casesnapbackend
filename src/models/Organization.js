@@ -87,6 +87,19 @@ const OrganizationSchema = new mongoose.Schema({
         default: 'free',
         trim: true
     },
+    subscriptionStatus: {
+        type: String,
+        enum: {
+            values: ['active', 'inactive', 'cancelled'],
+            message: 'Subscription status must be one of: active, inactive, cancelled'
+        },
+        default: 'active',
+        trim: true
+    },
+    subscriptionExpiresAt: {
+        type: Date,
+        default: null
+    },
     // Reference to the super admin user (exactly ONE per organization)
     superAdmin: {
         type: String,

@@ -4,6 +4,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Employee = require('../models/Employee');
 const ErrorResponse = require('../utils/errorResponse');
+const { validateOrganizationSubscription } = require('../utils/subscriptionUtils');
 
 // Protect routes (optional - doesn't fail if no token)
 // Used for public routes that can optionally check authorization if user is authenticated
@@ -85,6 +86,12 @@ exports.protect = async (req, res, next) => {
 
         if (!req.user) {
             return next(new ErrorResponse('No user found with this token', 401));
+        }
+
+        // Enforce subscription status/expiry for every protected request
+        const subscriptionCheck = validateOrganizationSubscription(req.user.organization);
+        if (!subscriptionCheck.valid) {
+            return next(new ErrorResponse(subscriptionCheck.reason, 403));
         }
 
         next();

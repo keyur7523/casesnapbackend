@@ -420,9 +420,78 @@ The ${organizationName} Team
     }
 };
 
+// Send password reset email
+const sendPasswordResetEmail = async ({ to, fullName, resetLink, organizationName = 'CaseSnap' }) => {
+    const fromEmail = process.env.GMAIL_EMAIL || process.env.GMAIL_USER || 'casesnap2025@gmail.com';
+    const password = process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD;
+
+    if (!fromEmail || !password) {
+        return {
+            success: false,
+            message: 'Gmail service not configured. GMAIL_EMAIL and GMAIL_APP_PASSWORD are required.',
+            error: 'GMAIL_NOT_CONFIGURED'
+        };
+    }
+
+    let transporter;
+    try {
+        transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: fromEmail,
+                pass: password
+            }
+        });
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message,
+            errorCode: 'TRANSPORTER_ERROR'
+        };
+    }
+
+    const mailOptions = {
+        from: {
+            name: organizationName,
+            address: fromEmail
+        },
+        to,
+        subject: `Reset your ${organizationName} password`,
+        html: `
+            <div style="font-family: system-ui, sans-serif, Arial; font-size: 16px; background-color: #f8fafc; color: #0f172a; padding: 20px;">
+              <div style="max-width: 600px; margin: auto; padding: 40px; background-color: #ffffff; border-radius: 12px;">
+                <h2 style="margin-top: 0;">Password Reset Request</h2>
+                <p>Hello ${fullName || 'User'},</p>
+                <p>We received a request to reset your password. Click the button below to set a new password.</p>
+                <div style="text-align: center; margin: 24px 0;">
+                  <a href="${resetLink}" target="_blank" style="display: inline-block; text-decoration: none; color: #1f2937; background-color: #facc15; padding: 12px 24px; border-radius: 8px; font-weight: 600;">
+                    Reset Password
+                  </a>
+                </div>
+                <p style="font-size: 14px; color: #64748b;">This link expires in 15 minutes.</p>
+                <p style="font-size: 14px; color: #64748b;">If you did not request this, please ignore this email.</p>
+              </div>
+            </div>
+        `,
+        text: `Hello ${fullName || 'User'},\n\nWe received a request to reset your password.\nReset link: ${resetLink}\n\nThis link expires in 15 minutes.\nIf you did not request this, please ignore this email.`
+    };
+
+    try {
+        const info = await transporter.sendMail(mailOptions);
+        return { success: true, messageId: info.messageId };
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message,
+            errorCode: 'GMAIL_ERROR'
+        };
+    }
+};
+
 module.exports = {
     initializeEmailService,
     sendEmployeeInvitation,
     sendUserInvitation,
+    sendPasswordResetEmail,
     testEmailConnection
 };

@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { generateEmployeeId } = require('../utils/idGenerator');
 
 const EmployeeSchema = new mongoose.Schema({
@@ -152,6 +153,14 @@ const EmployeeSchema = new mongoose.Schema({
         minlength: [6, 'Password must be at least 6 characters'],
         select: false // Don't include password in queries by default
     },
+    resetPasswordToken: {
+        type: String,
+        select: false
+    },
+    resetPasswordExpire: {
+        type: Date,
+        select: false
+    },
     
     // Role field (always 'employee' for employees, but stored for filtering)
     role: {
@@ -297,6 +306,21 @@ EmployeeSchema.methods.matchPassword = async function(enteredPassword) {
         return false;
     }
     return await bcrypt.compare(enteredPassword, this.password);
+};
+
+// Generate and return raw reset token; hashed token is stored in DB
+EmployeeSchema.methods.getResetPasswordToken = function() {
+    const resetToken = crypto.randomBytes(32).toString('hex');
+
+    this.resetPasswordToken = crypto
+        .createHash('sha256')
+        .update(resetToken)
+        .digest('hex');
+
+    // 15 minutes
+    this.resetPasswordExpire = new Date(Date.now() + 15 * 60 * 1000);
+
+    return resetToken;
 };
 
 // Virtual for full name
