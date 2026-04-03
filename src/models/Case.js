@@ -8,6 +8,59 @@ const { generateCaseId } = require('../utils/idGenerator');
 const COURT_PREMISES_ENUM = ['District Court', 'High Court', 'Supreme Court', 'Tribunal', 'Other'];
 const COURT_NAME_ENUM = ['District Court Delhi', 'High Court Delhi', 'Supreme Court', 'Consumer Forum', 'Labour Court', 'Family Court', 'Other'];
 
+const CaseStageSchema = new mongoose.Schema({
+    stageName: {
+        type: String,
+        required: [true, 'Stage name is required'],
+        trim: true,
+        maxlength: [150, 'Stage name cannot exceed 150 characters']
+    },
+    todaySummary: {
+        type: String,
+        trim: true,
+        maxlength: [2000, 'Today summary cannot exceed 2000 characters']
+    },
+    nextDate: {
+        type: Date,
+        default: null
+    },
+    nextDatePurpose: {
+        type: String,
+        trim: true,
+        maxlength: [500, 'Next date purpose cannot exceed 500 characters']
+    },
+    nextDatePreparation: {
+        type: String,
+        trim: true,
+        maxlength: [2000, 'Next date preparation cannot exceed 2000 characters']
+    },
+    confirmedBy: {
+        type: String,
+        ref: 'User',
+        required: [true, 'Confirmed by is required']
+    },
+    confirmedAt: {
+        type: Date,
+        default: null
+    },
+    reminderMeta: {
+        before5DaysSentAt: { type: Date, default: null },
+        before2DaysSentAt: { type: Date, default: null },
+        before1DaySentAt: { type: Date, default: null },
+        afterDateSentAt: { type: Date, default: null }
+    },
+    createdBy: {
+        type: String,
+        ref: 'User',
+        required: true
+    },
+    updatedBy: {
+        type: String,
+        ref: 'User',
+        default: null
+    }
+}, { timestamps: true });
+
 const CaseSchema = new mongoose.Schema({
     _id: {
         type: String,
@@ -31,11 +84,7 @@ const CaseSchema = new mongoose.Schema({
         trim: true,
         maxlength: [200, 'Party name cannot exceed 200 characters']
     },
-    stage: {
-        type: String,
-        trim: true,
-        maxlength: [100, 'Stage cannot exceed 100 characters']
-    },
+    stages: [CaseStageSchema],
     courtName: {
         type: String,
         enum: COURT_NAME_ENUM,
@@ -112,6 +161,7 @@ const CaseSchema = new mongoose.Schema({
 // Indexes for better query performance
 CaseSchema.index({ organization: 1, status: 1 });
 CaseSchema.index({ organization: 1, caseNumber: 1 });
+CaseSchema.index({ organization: 1, status: 1, 'stages.nextDate': 1 });
 CaseSchema.index({ assignedTo: 1 });
 CaseSchema.index({ deletedAt: 1 });
 

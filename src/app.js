@@ -18,6 +18,7 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const errorHandler = require('./middleware/error');
 const path = require('path');
 const { initializeEmailService } = require('./utils/gmailService');
+const { startCaseStageReminderJob } = require('./utils/caseStageReminderJob');
 
 const app = express();
 const PORT = process.env.PORT || 5004;
@@ -104,6 +105,7 @@ connectDB();
 mongoose.connection.once('open', async () => {
     const { initializeDefaultModules } = require('./utils/initializeModules');
     await initializeDefaultModules();
+    startCaseStageReminderJob();
 });
 
 // Initialize email service

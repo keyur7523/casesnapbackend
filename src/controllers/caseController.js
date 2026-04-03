@@ -4,12 +4,33 @@
 const Case = require('../models/Case');
 const Client = require('../models/Client');
 const Notification = require('../models/Notification');
+const User = require('../models/User');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const { canAssignModule, getAssigneeUserIdsForModule } = require('../utils/assigneeUtils');
 const { sendEncryptedJson } = require('../utils/responseEncryption');
 
 const canViewAllCases = (userRole) => canAssignModule(userRole, 'cases');
+const STAGE_CONFIRM_USER_SELECT = '_id firstName lastName email';
+
+const normalizeOrganizationId = (org) => {
+    if (!org) return null;
+    if (typeof org === 'string') return org;
+    if (org._id) return org._id.toString();
+    if (org.toString) return org.toString();
+    return null;
+};
+
+const sanitizeStagePayload = (payload = {}) => ({
+    stageName: payload.stageName ? String(payload.stageName).trim() : '',
+    todaySummary: payload.todaySummary ? String(payload.todaySummary).trim() : '',
+    nextDate: payload.nextDate ? new Date(payload.nextDate) : null,
+    nextDatePurpose: payload.nextDatePurpose ? String(payload.nextDatePurpose).trim() : '',
+    nextDatePreparation: payload.nextDatePreparation ? String(payload.nextDatePreparation).trim() : '',
+    confirmedBy: payload.confirmedBy ? String(payload.confirmedBy).trim() : ''
+});
+
+const isValidDateOrNull = (d) => d === null || (d instanceof Date && !Number.isNaN(d.getTime()));
 
 /**
  * @desc    Create a new case
@@ -24,7 +45,6 @@ exports.createCase = asyncHandler(async (req, res, next) => {
         caseNumber,
         caseType,
         partyName,
-        stage,
         courtName,
         courtPremises,
         assignedTo,
@@ -89,7 +109,6 @@ exports.createCase = asyncHandler(async (req, res, next) => {
         caseNumber: caseNumber.trim(),
         caseType: caseType.trim(),
         partyName: partyName.trim(),
-        stage: stage ? stage.trim() : undefined,
         courtName: courtName ? courtName.trim() : undefined,
         courtPremises: courtPremises || undefined,
         assignedTo: effectiveAssignedTo,
@@ -138,6 +157,7 @@ exports.createCase = asyncHandler(async (req, res, next) => {
     await newCase.populate('assignedTo', 'firstName lastName email');
     await newCase.populate('createdBy', 'firstName lastName email');
     await newCase.populate('clients', 'firstName lastName email phone');
+    await newCase.populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
 
     res.status(201).json({
         success: true,
@@ -201,7 +221,7 @@ exports.getCases = asyncHandler(async (req, res, next) => {
             { caseNumber: { $regex: search, $options: 'i' } },
             { caseType: { $regex: search, $options: 'i' } },
             { partyName: { $regex: search, $options: 'i' } },
-            { stage: { $regex: search, $options: 'i' } },
+            { 'stages.stageName': { $regex: search, $options: 'i' } },
             { courtName: { $regex: search, $options: 'i' } }
         ];
     }
@@ -218,6 +238,7 @@ exports.getCases = asyncHandler(async (req, res, next) => {
         .populate('assignedTo', 'firstName lastName email')
         .populate('createdBy', 'firstName lastName email')
         .populate('clients', 'firstName lastName email phone')
+        .populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT)
         .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
         .skip(skip)
         .limit(limitNum)
@@ -253,7 +274,8 @@ exports.getCase = asyncHandler(async (req, res, next) => {
         .populate('assignedTo', 'firstName lastName email')
         .populate('createdBy', 'firstName lastName email')
         .populate('updatedBy', 'firstName lastName email')
-        .populate('clients', 'firstName lastName email phone');
+        .populate('clients', 'firstName lastName email phone')
+        .populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
 
     if (!caseDoc) {
         return next(new ErrorResponse('Case not found', 404));
@@ -339,7 +361,7 @@ exports.updateCase = asyncHandler(async (req, res, next) => {
     }
 
     const updateFields = [
-        'caseNumber', 'caseType', 'partyName', 'stage', 'courtName', 'courtPremises',
+        'caseNumber', 'caseType', 'partyName', 'courtName', 'courtPremises',
         'assignedTo', 'status', 'notes'
     ];
 
@@ -357,6 +379,7 @@ exports.updateCase = asyncHandler(async (req, res, next) => {
     await caseDoc.populate('createdBy', 'firstName lastName email');
     await caseDoc.populate('updatedBy', 'firstName lastName email');
     await caseDoc.populate('clients', 'firstName lastName email phone');
+    await caseDoc.populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
 
     console.log('✅ Case updated:', { id: caseDoc._id, caseNumber: caseDoc.caseNumber });
 
@@ -505,5 +528,277 @@ exports.unarchiveCase = asyncHandler(async (req, res, next) => {
         success: true,
         message: 'Case unarchived successfully',
         data: caseDoc
+    });
+});
+
+/**
+ * @desc    Get case assignees for dropdown (confirm by)
+ * @route   GET /api/cases/assignees
+ * @access  Private (Requires 'read' permission on 'cases' module)
+ */
+exports.getCaseAssignees = asyncHandler(async (req, res, next) => {
+    const organizationId = normalizeOrganizationId(req.user.organization);
+    const assigneeUserIds = await getAssigneeUserIdsForModule(organizationId, 'cases');
+
+    const users = await User.find({
+        _id: { $in: assigneeUserIds },
+        organization: organizationId,
+        status: { $nin: ['terminated'] }
+    })
+        .select('_id firstName lastName email')
+        .sort({ firstName: 1, lastName: 1 })
+        .lean();
+
+    const data = users.map((u) => ({
+        id: u._id.toString(),
+        firstName: u.firstName,
+        lastName: u.lastName,
+        email: u.email
+    }));
+
+    return res.status(200).json({
+        success: true,
+        count: data.length,
+        data
+    });
+});
+
+/**
+ * @desc    Add stage row for a case
+ * @route   POST /api/cases/:id/stages
+ * @access  Private (Requires 'update' permission on 'cases' module)
+ */
+exports.addCaseStage = asyncHandler(async (req, res, next) => {
+    const { id } = req.params;
+    const organizationId = normalizeOrganizationId(req.user.organization);
+    const userId = req.user._id.toString();
+
+    const caseDoc = await Case.findOne({
+        _id: id,
+        organization: organizationId,
+        deletedAt: null
+    });
+
+    if (!caseDoc) {
+        return next(new ErrorResponse('Case not found', 404));
+    }
+
+    if (!canViewAllCases(req.userRole) && String(caseDoc.assignedTo) !== userId) {
+        return next(new ErrorResponse('You do not have permission to add case stages', 403));
+    }
+
+    const inputStages = Array.isArray(req.body) ? req.body : [req.body];
+    if (inputStages.length === 0) {
+        return next(new ErrorResponse('At least one stage is required', 400));
+    }
+
+    const validAssignees = await getAssigneeUserIdsForModule(organizationId, 'cases');
+
+    const stagesToInsert = [];
+    for (const raw of inputStages) {
+        const stageData = sanitizeStagePayload(raw);
+
+        if (!stageData.stageName) {
+            return next(new ErrorResponse('Stage name is required', 400));
+        }
+
+        if (!stageData.confirmedBy) {
+            return next(new ErrorResponse('Confirmed by is required', 400));
+        }
+
+        if (!isValidDateOrNull(stageData.nextDate)) {
+            return next(new ErrorResponse('Invalid next date', 400));
+        }
+
+        if (!validAssignees.includes(stageData.confirmedBy)) {
+            return next(new ErrorResponse('Confirmed by must be a valid case assignee', 400));
+        }
+
+        stagesToInsert.push({
+            stageName: stageData.stageName,
+            todaySummary: stageData.todaySummary || undefined,
+            nextDate: stageData.nextDate || null,
+            nextDatePurpose: stageData.nextDatePurpose || undefined,
+            nextDatePreparation: stageData.nextDatePreparation || undefined,
+            confirmedBy: stageData.confirmedBy,
+            createdBy: userId,
+            updatedBy: userId
+        });
+    }
+
+    // Ensure confirmedBy users exist in the organization (avoid dangling ids)
+    const confirmIds = [...new Set(stagesToInsert.map((s) => s.confirmedBy))];
+    const confirmUsersCount = await User.countDocuments({
+        _id: { $in: confirmIds },
+        organization: organizationId,
+        status: { $nin: ['terminated'] }
+    });
+    if (confirmUsersCount !== confirmIds.length) {
+        return next(new ErrorResponse('One or more confirmedBy users are invalid for this organization', 400));
+    }
+
+    const beforeLen = caseDoc.stages.length;
+    caseDoc.stages.push(...stagesToInsert);
+
+    caseDoc.updatedBy = userId;
+    await caseDoc.save();
+    await caseDoc.populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
+
+    const createdStages = caseDoc.stages.slice(beforeLen);
+
+    // Notify confirmedBy users to confirm stage(s)
+    try {
+        for (const stage of createdStages) {
+            await Notification.create({
+                userId: stage.confirmedBy.toString(),
+                organization: organizationId,
+                type: 'case_stage_needs_confirmation',
+                title: 'Stage needs confirmation',
+                message: `${caseDoc.caseNumber || caseDoc._id} - Please confirm stage: ${stage.stageName}`,
+                relatedEntityType: 'case',
+                relatedEntityId: caseDoc._id.toString(),
+                createdBy: userId
+            });
+        }
+    } catch (err) {
+        console.error('⚠️ Failed to create stage confirmation notifications:', err.message);
+    }
+
+    return res.status(201).json({
+        success: true,
+        message: 'Case stage(s) added successfully',
+        count: createdStages.length,
+        data: createdStages
+    });
+});
+
+/**
+ * @desc    Update a case stage (only confirmedBy can edit)
+ * @route   PUT /api/cases/:id/stages/:stageId
+ * @access  Private (Requires 'update' permission on 'cases' module)
+ */
+exports.updateCaseStage = asyncHandler(async (req, res, next) => {
+    const { id, stageId } = req.params;
+    const organizationId = normalizeOrganizationId(req.user.organization);
+    const userId = req.user._id.toString();
+
+    const caseDoc = await Case.findOne({
+        _id: id,
+        organization: organizationId,
+        deletedAt: null
+    });
+
+    if (!caseDoc) {
+        return next(new ErrorResponse('Case not found', 404));
+    }
+
+    // Must be able to update the case in general
+    if (!canViewAllCases(req.userRole) && String(caseDoc.assignedTo) !== userId) {
+        return next(new ErrorResponse('You do not have permission to update case stages', 403));
+    }
+
+    const stage = (caseDoc.stages || []).id(stageId);
+    if (!stage) {
+        return next(new ErrorResponse('Case stage not found', 404));
+    }
+
+    // Lock AFTER confirmation: only confirmedBy can edit this stage
+    if (stage.confirmedAt && String(stage.confirmedBy) !== userId) {
+        return next(new ErrorResponse('Stage is confirmed. Only the confirmedBy user can edit it.', 403));
+    }
+
+    const payload = sanitizeStagePayload(req.body);
+
+    if (payload.stageName !== '') stage.stageName = payload.stageName;
+    if (req.body.todaySummary !== undefined) stage.todaySummary = payload.todaySummary || undefined;
+    if (req.body.nextDatePurpose !== undefined) stage.nextDatePurpose = payload.nextDatePurpose || undefined;
+    if (req.body.nextDatePreparation !== undefined) stage.nextDatePreparation = payload.nextDatePreparation || undefined;
+
+    if (req.body.nextDate !== undefined) {
+        if (!isValidDateOrNull(payload.nextDate)) {
+            return next(new ErrorResponse('Invalid next date', 400));
+        }
+
+        const oldNextDate = stage.nextDate ? new Date(stage.nextDate) : null;
+        stage.nextDate = payload.nextDate;
+
+        // If nextDate changed, reset reminderMeta so reminders can fire again for new date.
+        const oldTime = oldNextDate ? oldNextDate.getTime() : null;
+        const newTime = payload.nextDate ? payload.nextDate.getTime() : null;
+        if (oldTime !== newTime) {
+            stage.reminderMeta = {
+                before5DaysSentAt: null,
+                before2DaysSentAt: null,
+                before1DaySentAt: null,
+                afterDateSentAt: null
+            };
+        }
+    }
+
+    // confirmedBy is NOT editable (keeps lock consistent)
+    stage.updatedBy = userId;
+    caseDoc.updatedBy = userId;
+    await caseDoc.save();
+    await caseDoc.populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Case stage updated successfully',
+        data: stage
+    });
+});
+
+/**
+ * @desc    Confirm a case stage (only confirmedBy can confirm)
+ * @route   PATCH /api/cases/:id/stages/:stageId/confirm
+ * @access  Private (Requires 'update' permission on 'cases' module)
+ */
+exports.confirmCaseStage = asyncHandler(async (req, res, next) => {
+    const { id, stageId } = req.params;
+    const organizationId = normalizeOrganizationId(req.user.organization);
+    const userId = req.user._id.toString();
+
+    const caseDoc = await Case.findOne({
+        _id: id,
+        organization: organizationId,
+        deletedAt: null
+    });
+
+    if (!caseDoc) {
+        return next(new ErrorResponse('Case not found', 404));
+    }
+
+    // Must be able to update the case in general
+    if (!canViewAllCases(req.userRole) && String(caseDoc.assignedTo) !== userId) {
+        return next(new ErrorResponse('You do not have permission to confirm case stages', 403));
+    }
+
+    const stage = (caseDoc.stages || []).id(stageId);
+    if (!stage) {
+        return next(new ErrorResponse('Case stage not found', 404));
+    }
+
+    if (String(stage.confirmedBy) !== userId) {
+        return next(new ErrorResponse('Only the confirmedBy user can confirm this stage', 403));
+    }
+
+    if (stage.confirmedAt) {
+        return res.status(200).json({
+            success: true,
+            message: 'Stage already confirmed',
+            data: stage
+        });
+    }
+
+    stage.confirmedAt = new Date();
+    stage.updatedBy = userId;
+    caseDoc.updatedBy = userId;
+    await caseDoc.save();
+    await caseDoc.populate('stages.confirmedBy', STAGE_CONFIRM_USER_SELECT);
+
+    return res.status(200).json({
+        success: true,
+        message: 'Stage confirmed successfully',
+        data: stage
     });
 });
