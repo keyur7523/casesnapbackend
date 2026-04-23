@@ -1,8 +1,11 @@
 const express = require('express');
-const { initializeSetup } = require('../controllers/setupController'); // We'll create this controller next
+const { initializeSetup, getOnboardingStatus } = require('../controllers/setupController');
+const { protect } = require('../middleware/auth');
 
 const router = express.Router();
 
-router.post('/initialize', initializeSetup); // The combined setup endpoint
+router.post('/initialize', initializeSetup);
+
+router.get('/onboarding-status', protect, getOnboardingStatus);
 
 module.exports = router;
