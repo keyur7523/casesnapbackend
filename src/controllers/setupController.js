@@ -3,6 +3,8 @@
 const Organization = require('../models/Organization');
 const User = require('../models/User');
 const Role = require('../models/Role');
+const Client = require('../models/Client');
+const Case = require('../models/Case');
 const Module = require('../models/Module');
 const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
@@ -10,6 +12,78 @@ const jwt = require('jsonwebtoken'); // For generating tokens
 const { getAssigneePermissionsForRole } = require('../utils/assigneeUtils');
 const { initializeDefaultModules } = require('../utils/initializeModules');
 const { getEffectivePermissionsForRole } = require('../utils/roleUtils');
+
+function resolveOrganizationId(user) {
+    if (!user || user.organization == null) return null;
+    const org = user.organization;
+    if (typeof org === 'object' && org !== null && org._id != null) {
+        return String(org._id);
+    }
+    return String(org);
+}
+
+// @desc      Onboarding checklist for the current user's organization (counts + suggested next step)
+// @route     GET /api/setup/onboarding-status
+// @access    Private
+exports.getOnboardingStatus = asyncHandler(async (req, res, next) => {
+    const organizationId = resolveOrganizationId(req.user);
+    if (!organizationId) {
+        return next(new ErrorResponse('Organization not found for this user', 400));
+    }
+
+    const orgExists = await Organization.findById(organizationId).select('_id').lean();
+    if (!orgExists) {
+        return next(new ErrorResponse('Organization not found', 404));
+    }
+
+    const [
+        roleCount,
+        customRoleCount,
+        approvedUserCount,
+        clientCount,
+        caseCount
+    ] = await Promise.all([
+        Role.countDocuments({ organization: organizationId }),
+        Role.countDocuments({ organization: organizationId, isSystemRole: false }),
+        User.countDocuments({ organization: organizationId, status: 'approved' }),
+        Client.countDocuments({ organization: organizationId, deletedAt: null }),
+        Case.countDocuments({ organization: organizationId, deletedAt: null })
+    ]);
+
+    const readiness = {
+        hasRoles: roleCount >= 1,
+        hasCustomRoles: customRoleCount >= 1,
+        hasApprovedUsers: approvedUserCount >= 1,
+        hasClients: clientCount >= 1,
+        hasCases: caseCount >= 1,
+        suggestInviteMoreUsers: customRoleCount >= 1 && approvedUserCount <= 1
+    };
+
+    let suggestedNextStep = null;
+    if (customRoleCount === 0) {
+        suggestedNextStep = 'create_custom_role';
+    } else if (clientCount === 0) {
+        suggestedNextStep = 'create_client';
+    } else if (caseCount === 0) {
+        suggestedNextStep = 'create_case';
+    }
+
+    res.status(200).json({
+        success: true,
+        data: {
+            organizationId,
+            counts: {
+                roles: roleCount,
+                customRoles: customRoleCount,
+                approvedUsers: approvedUserCount,
+                clients: clientCount,
+                cases: caseCount
+            },
+            readiness,
+            suggestedNextStep
+        }
+    });
+});
 
 // @desc      Initialize Organization and Super Admin
 // @route     POST /api/setup/initialize
