@@ -31,10 +31,10 @@ const errorHandler = (err, req, res, next) => {
 
     // Multer errors (file upload)
     if (err.code === 'LIMIT_FILE_SIZE') {
-        error = new ErrorResponse('File too large. Aadhar image max size is 1 MB', 400);
+        error = new ErrorResponse('File too large. Please upload a smaller file.', 400);
     }
     if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-        error = new ErrorResponse('Use form field name: file, image, or aadharImage', 400);
+        error = new ErrorResponse('Unexpected file field. Use a supported form field name (e.g., file).', 400);
     }
     if (err.code === 'LIMIT_FILE_COUNT') {
         error = new ErrorResponse(err.message || 'File upload limit exceeded', 400);

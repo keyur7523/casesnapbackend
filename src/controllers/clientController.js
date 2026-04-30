@@ -7,8 +7,34 @@ const asyncHandler = require('../middleware/asyncHandler');
 const ErrorResponse = require('../utils/errorResponse');
 const { canAssignModule, getAssigneeUserIdsForModule } = require('../utils/assigneeUtils');
 const { sendEncryptedJson } = require('../utils/responseEncryption');
+const { parseExcelFromBuffer, writeExcelToBuffer, toSafeString, toOptionalNumber, toOptionalDate, formatMongooseErrorForUser } = require('../utils/excelUtils');
 
 const canViewAllClients = (userRole) => canAssignModule(userRole, 'client');
+
+const CLIENT_EXCEL_SHEET = 'Clients';
+const CLIENT_GENDER_ENUM = Client.schema?.path('gender')?.enumValues || ['Male', 'Female', 'Other', 'Prefer not to say'];
+const CLIENT_STATUS_ENUM = Client.schema?.path('status')?.enumValues || ['active', 'inactive', 'prospect', 'archived'];
+const CLIENT_EXCEL_HEADERS = [
+    'firstName',
+    'lastName',
+    'email',
+    'phone',
+    'alternatePhone',
+    'streetAddress',
+    'city',
+    'province',
+    'postalCode',
+    'country',
+    'dateOfBirth',
+    'gender',
+    'occupation',
+    'companyName',
+    'aadharCardNumber',
+    'panCardNumber',
+    'fees',
+    'status',
+    'notes'
+];
 
 /**
  * @desc    Create a new client
@@ -461,5 +487,390 @@ exports.unarchiveClient = asyncHandler(async (req, res, next) => {
         success: true,
         message: 'Client unarchived successfully',
         data: client
+    });
+});
+
+/**
+ * @desc    Download client Excel template (strict headers)
+ * @route   GET /api/clients/excel/template
+ * @access  Private (Requires 'read' permission on 'client' module)
+ */
+exports.downloadClientExcelTemplate = asyncHandler(async (req, res) => {
+    const buffer = writeExcelToBuffer({
+        sheetName: CLIENT_EXCEL_SHEET,
+        headers: CLIENT_EXCEL_HEADERS,
+        rows: []
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="clients-template.xlsx"');
+    res.status(200).send(buffer);
+});
+
+/**
+ * @desc    Export clients to Excel (matches list visibility rules)
+ * @route   GET /api/clients/excel/export
+ * @access  Private (Requires 'read' permission on 'client' module)
+ */
+exports.exportClientsToExcel = asyncHandler(async (req, res) => {
+    const organizationId = req.user.organization;
+    const userId = req.user._id;
+
+    const {
+        status,
+        assignedTo,
+        search,
+        includeDeleted = false,
+        sortBy = 'createdAt',
+        sortOrder = 'desc'
+    } = req.query;
+
+    const query = { organization: organizationId };
+    const showDeleted = includeDeleted === true || includeDeleted === 'true';
+    if (!showDeleted) query.deletedAt = null;
+
+    if (status) query.status = status;
+    if (assignedTo) query.assignedTo = assignedTo;
+
+    if (!canViewAllClients(req.userRole)) {
+        query.assignedTo = userId;
+    }
+
+    if (search) {
+        query.$or = [
+            { firstName: { $regex: search, $options: 'i' } },
+            { lastName: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+            { phone: { $regex: search, $options: 'i' } },
+            { companyName: { $regex: search, $options: 'i' } }
+        ];
+    }
+
+    const findOptions = showDeleted ? { includeDeleted: true } : {};
+    const clients = await Client.find(query)
+        .setOptions(findOptions)
+        .sort({ [sortBy]: sortOrder === 'asc' ? 1 : -1 })
+        .lean({ virtuals: true });
+
+    const rows = clients.map((c) => ({
+        firstName: c.firstName ?? '',
+        lastName: c.lastName ?? '',
+        email: c.email ?? '',
+        phone: c.phone ?? '',
+        alternatePhone: c.alternatePhone ?? '',
+        streetAddress: c.streetAddress ?? '',
+        city: c.city ?? '',
+        province: c.province ?? '',
+        postalCode: c.postalCode ?? '',
+        country: c.country ?? 'India',
+        dateOfBirth: c.dateOfBirth ? new Date(c.dateOfBirth).toISOString().slice(0, 10) : '',
+        gender: c.gender ?? '',
+        occupation: c.occupation ?? '',
+        companyName: c.companyName ?? '',
+        aadharCardNumber: c.aadharCardNumber ?? '',
+        panCardNumber: c.panCardNumber ?? '',
+        fees: c.fees ?? '',
+        status: c.status ?? 'active',
+        notes: c.notes ?? ''
+    }));
+
+    const buffer = writeExcelToBuffer({
+        sheetName: CLIENT_EXCEL_SHEET,
+        headers: CLIENT_EXCEL_HEADERS,
+        rows
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="clients-export.xlsx"');
+    res.status(200).send(buffer);
+});
+
+/**
+ * @desc    Import clients from Excel (strict template + row validations)
+ * @route   POST /api/clients/excel/import
+ * @access  Private (Requires 'create' permission on 'client' module)
+ */
+exports.importClientsFromExcel = asyncHandler(async (req, res, next) => {
+    const organizationId = req.user.organization;
+    const userId = req.user._id;
+    const importerIsAssignee = req.userRole && canAssignModule(req.userRole, 'client');
+
+    const file = req.file;
+    if (!file || !file.buffer) {
+        return next(new ErrorResponse('Excel file is required (form-data field: file)', 400));
+    }
+
+    const parsed = parseExcelFromBuffer(file.buffer, {
+        sheetName: CLIENT_EXCEL_SHEET,
+        expectedHeaders: CLIENT_EXCEL_HEADERS,
+        maxRows: 5000
+    });
+
+    if (!parsed.ok) {
+        return next(new ErrorResponse(parsed.error, 400));
+    }
+
+    const errors = [];
+    let createdCount = 0;
+    let skippedCount = 0;
+
+    for (const row of parsed.rows) {
+        const r = row.rowNumber;
+        const d = row.data;
+
+        const firstName = toSafeString(d.firstName);
+        const lastName = toSafeString(d.lastName);
+        const email = toSafeString(d.email).toLowerCase() || undefined;
+        const phoneRaw = toSafeString(d.phone);
+        const phone = phoneRaw ? phoneRaw.replace(/\D/g, '') : '';
+        const alternatePhoneRaw = toSafeString(d.alternatePhone);
+        const alternatePhone = alternatePhoneRaw ? alternatePhoneRaw.replace(/\D/g, '') : undefined;
+        const streetAddress = toSafeString(d.streetAddress);
+        const city = toSafeString(d.city);
+        const province = toSafeString(d.province);
+        const postalCode = toSafeString(d.postalCode);
+        const country = toSafeString(d.country) || 'India';
+        const dateOfBirth = toOptionalDate(d.dateOfBirth);
+        const gender = toSafeString(d.gender) || undefined;
+        const occupation = toSafeString(d.occupation) || undefined;
+        const companyName = toSafeString(d.companyName) || undefined;
+        const aadharCardNumber = toSafeString(d.aadharCardNumber) || undefined;
+        const panCardNumber = toSafeString(d.panCardNumber) || undefined;
+        const fees = toOptionalNumber(d.fees);
+        const status = toSafeString(d.status) || undefined;
+        const notes = toSafeString(d.notes) || undefined;
+
+        const rowIssues = [];
+        if (!firstName) rowIssues.push('firstName is required');
+        if (!lastName) rowIssues.push('lastName is required');
+        if (!phone) rowIssues.push('phone is required');
+        if (phone && phone.length !== 10) rowIssues.push('phone must be a 10-digit number');
+        if (alternatePhone && alternatePhone.length !== 10) rowIssues.push('alternatePhone must be a 10-digit number');
+        if (!streetAddress) rowIssues.push('streetAddress is required');
+        if (!city) rowIssues.push('city is required');
+        if (!province) rowIssues.push('province is required');
+        if (!postalCode) rowIssues.push('postalCode is required');
+        if (fees === undefined || Number.isNaN(fees)) rowIssues.push('fees is required and must be a number');
+        if (dateOfBirth !== undefined && Number.isNaN(dateOfBirth)) rowIssues.push('dateOfBirth must be a valid date');
+        if (gender && !CLIENT_GENDER_ENUM.includes(gender)) rowIssues.push(`gender must be one of: ${CLIENT_GENDER_ENUM.join(', ')}`);
+        if (status && !CLIENT_STATUS_ENUM.includes(status)) rowIssues.push(`status must be one of: ${CLIENT_STATUS_ENUM.join(', ')}`);
+
+        if (rowIssues.length > 0) {
+            errors.push({ row: r, errors: rowIssues });
+            skippedCount++;
+            continue;
+        }
+
+        if (email) {
+            const existingClient = await Client.findOne({
+                organization: organizationId,
+                email,
+                deletedAt: null
+            }).lean();
+            if (existingClient) {
+                errors.push({ row: r, errors: ['A client with this email already exists'] });
+                skippedCount++;
+                continue;
+            }
+        }
+
+        try {
+            await Client.create({
+                firstName,
+                lastName,
+                email,
+                phone,
+                alternatePhone,
+                streetAddress,
+                city,
+                province,
+                postalCode,
+                country,
+                dateOfBirth: dateOfBirth === undefined ? undefined : dateOfBirth,
+                gender,
+                occupation,
+                companyName,
+                aadharCardNumber,
+                panCardNumber,
+                fees,
+                // Excel template does not include assignedTo; default is unassigned.
+                assignedTo: null,
+                status,
+                notes,
+                organization: organizationId,
+                createdBy: userId
+            });
+            createdCount++;
+        } catch (e) {
+            errors.push({ row: r, errors: formatMongooseErrorForUser(e) });
+            skippedCount++;
+        }
+    }
+
+    // Notify assignees when a non-assignee bulk-imports unassigned clients
+    if (!importerIsAssignee && createdCount > 0) {
+        try {
+            const assigneeUserIds = await getAssigneeUserIdsForModule(organizationId, 'client');
+            const creatorIdStr = userId.toString();
+            const recipientIds = assigneeUserIds.filter((id) => id !== creatorIdStr);
+            for (const assigneeId of recipientIds) {
+                await Notification.create({
+                    userId: assigneeId,
+                    organization: organizationId,
+                    type: 'client_bulk_imported',
+                    title: 'Clients imported',
+                    message: `${createdCount} client(s) were imported and are unassigned.`,
+                    relatedEntityType: 'client',
+                    relatedEntityId: null,
+                    createdBy: creatorIdStr
+                });
+            }
+        } catch (notifErr) {
+            console.error('⚠️ Failed to create bulk-import notifications:', notifErr.message);
+        }
+    }
+
+    res.status(200).json({
+        success: true,
+        message: 'Client Excel import completed',
+        data: {
+            created: createdCount,
+            skipped: skippedCount,
+            errors
+        }
+    });
+});
+
+/**
+ * @desc    Preview client Excel import (no DB writes)
+ * @route   POST /api/clients/excel/preview
+ * @access  Private (Requires 'create' permission on 'client' module)
+ */
+exports.previewClientsExcelImport = asyncHandler(async (req, res, next) => {
+    const organizationId = req.user.organization;
+    const userId = req.user._id;
+    const importerIsAssignee = req.userRole && canAssignModule(req.userRole, 'client');
+
+    const file = req.file;
+    if (!file || !file.buffer) {
+        return next(new ErrorResponse('Excel file is required (form-data field: file)', 400));
+    }
+
+    const parsed = parseExcelFromBuffer(file.buffer, {
+        sheetName: CLIENT_EXCEL_SHEET,
+        expectedHeaders: CLIENT_EXCEL_HEADERS,
+        maxRows: 5000
+    });
+
+    if (!parsed.ok) {
+        return next(new ErrorResponse(parsed.error, 400));
+    }
+
+    const preview = [];
+    const errors = [];
+
+    for (const row of parsed.rows) {
+        const r = row.rowNumber;
+        const d = row.data;
+
+        const firstName = toSafeString(d.firstName);
+        const lastName = toSafeString(d.lastName);
+        const email = toSafeString(d.email).toLowerCase() || undefined;
+        const phoneRaw = toSafeString(d.phone);
+        const phone = phoneRaw ? phoneRaw.replace(/\D/g, '') : '';
+        const alternatePhoneRaw = toSafeString(d.alternatePhone);
+        const alternatePhone = alternatePhoneRaw ? alternatePhoneRaw.replace(/\D/g, '') : '';
+        const streetAddress = toSafeString(d.streetAddress);
+        const city = toSafeString(d.city);
+        const province = toSafeString(d.province);
+        const postalCode = toSafeString(d.postalCode);
+        const country = toSafeString(d.country) || 'India';
+        const dateOfBirth = toOptionalDate(d.dateOfBirth);
+        const gender = toSafeString(d.gender) || undefined;
+        const occupation = toSafeString(d.occupation) || undefined;
+        const companyName = toSafeString(d.companyName) || undefined;
+        const aadharCardNumber = toSafeString(d.aadharCardNumber) || undefined;
+        const panCardNumber = toSafeString(d.panCardNumber) || undefined;
+        const fees = toOptionalNumber(d.fees);
+        const status = toSafeString(d.status) || undefined;
+        const notes = toSafeString(d.notes) || undefined;
+
+        const rowIssues = [];
+        if (!firstName) rowIssues.push('firstName is required');
+        if (!lastName) rowIssues.push('lastName is required');
+        if (!phone) rowIssues.push('phone is required');
+        if (phone && phone.length !== 10) rowIssues.push('phone must be a 10-digit number');
+        if (alternatePhone && alternatePhone.length !== 10) rowIssues.push('alternatePhone must be a 10-digit number');
+        if (!streetAddress) rowIssues.push('streetAddress is required');
+        if (!city) rowIssues.push('city is required');
+        if (!province) rowIssues.push('province is required');
+        if (!postalCode) rowIssues.push('postalCode is required');
+        if (fees === undefined || Number.isNaN(fees)) rowIssues.push('fees is required and must be a number');
+        if (dateOfBirth !== undefined && Number.isNaN(dateOfBirth)) rowIssues.push('dateOfBirth must be a valid date');
+        if (gender && !CLIENT_GENDER_ENUM.includes(gender)) rowIssues.push(`gender must be one of: ${CLIENT_GENDER_ENUM.join(', ')}`);
+        if (status && !CLIENT_STATUS_ENUM.includes(status)) rowIssues.push(`status must be one of: ${CLIENT_STATUS_ENUM.join(', ')}`);
+
+        let willCreate = true;
+        let duplicateReason = null;
+        if (email) {
+            const existingClient = await Client.findOne({
+                organization: organizationId,
+                email,
+                deletedAt: null
+            }).select('_id email').lean();
+            if (existingClient) {
+                willCreate = false;
+                duplicateReason = 'email already exists';
+                rowIssues.push('A client with this email already exists');
+            }
+        }
+
+        if (rowIssues.length > 0) {
+            errors.push({ row: r, errors: rowIssues });
+        }
+
+        preview.push({
+            row: r,
+            willCreate: willCreate && rowIssues.length === 0,
+            issues: rowIssues,
+            duplicateReason,
+            data: {
+                firstName,
+                lastName,
+                email: email || '',
+                phone,
+                alternatePhone: alternatePhone || '',
+                streetAddress,
+                city,
+                province,
+                postalCode,
+                country,
+                dateOfBirth: dateOfBirth && !Number.isNaN(dateOfBirth) ? new Date(dateOfBirth).toISOString().slice(0, 10) : '',
+                gender: gender || '',
+                occupation: occupation || '',
+                companyName: companyName || '',
+                aadharCardNumber: aadharCardNumber || '',
+                panCardNumber: panCardNumber || '',
+                fees: fees ?? '',
+                assignedTo: '',
+                status: status || '',
+                notes: notes || ''
+            },
+            willNotifyAssignees: !importerIsAssignee
+        });
+    }
+
+    res.status(200).json({
+        success: true,
+        message: 'Client Excel preview generated',
+        data: {
+            rows: preview,
+            totals: {
+                totalRows: preview.length,
+                validRows: preview.filter((p) => p.willCreate).length,
+                invalidRows: preview.filter((p) => !p.willCreate).length
+            },
+            errors
+        }
     });
 });
