@@ -13,13 +13,11 @@ const { parseExcelFromBuffer, writeExcelToBuffer, toSafeString, toOptionalNumber
 const canViewAllCases = (userRole) => canAssignModule(userRole, 'cases');
 
 const CASE_EXCEL_SHEET = 'Cases';
-const CASE_COURT_NAME_ENUM = Case.schema?.path('courtName')?.enumValues || [];
 const CASE_COURT_PREMISES_ENUM = Case.schema?.path('courtPremises')?.enumValues || [];
-// One row can represent one case-client link. Duplicate caseNumber rows are merged into one case with multiple clients.
+// One row can represent one case-client link. If caseNumber is provided, duplicate caseNumber rows are merged into one case with multiple clients.
 // For client resolution, provide clientId OR clientPhone OR clientEmail. If none match and you want auto-create,
 // provide required client creation fields.
-const CASE_EXCEL_HEADERS = [
-    'caseNumber',
+const CASE_EXCEL_HEADERS_V2 = [
     'caseType',
     'partyName',
     'stage',
@@ -39,6 +37,19 @@ const CASE_EXCEL_HEADERS = [
     'clientCountry',
     'clientFees'
 ];
+
+// Backward compatible: older templates included caseNumber as first column.
+const CASE_EXCEL_HEADERS_V1 = ['caseNumber', ...CASE_EXCEL_HEADERS_V2];
+
+function parseCaseExcel(buffer, { sheetName, maxRows } = {}) {
+    const v2 = parseExcelFromBuffer(buffer, { sheetName, expectedHeaders: CASE_EXCEL_HEADERS_V2, maxRows });
+    if (v2.ok) return { ...v2, version: 2 };
+
+    const v1 = parseExcelFromBuffer(buffer, { sheetName, expectedHeaders: CASE_EXCEL_HEADERS_V1, maxRows });
+    if (v1.ok) return { ...v1, version: 1 };
+
+    return v2; // return v2 error by default
+}
 
 /**
  * @desc    Create a new case
@@ -63,8 +74,8 @@ exports.createCase = asyncHandler(async (req, res, next) => {
     } = req.body;
 
     // Validate required fields
-    if (!caseNumber || !caseType || !partyName) {
-        return next(new ErrorResponse('Case number, case type, and party name are required', 400));
+    if (!caseType || !partyName) {
+        return next(new ErrorResponse('Case type and party name are required', 400));
     }
 
     const clientCountNum = parseInt(clientCount, 10) || 0;
@@ -94,15 +105,18 @@ exports.createCase = asyncHandler(async (req, res, next) => {
         }
     }
 
-    // Check if case with same case number exists in organization
-    const existingCase = await Case.findOne({
-        organization: organizationId,
-        caseNumber: caseNumber.trim(),
-        deletedAt: null
-    });
+    // Check if case with same case number exists in organization (only if provided)
+    const effectiveCaseNumber = typeof caseNumber === 'string' ? caseNumber.trim() : '';
+    if (effectiveCaseNumber) {
+        const existingCase = await Case.findOne({
+            organization: organizationId,
+            caseNumber: effectiveCaseNumber,
+            deletedAt: null
+        });
 
-    if (existingCase) {
-        return next(new ErrorResponse('A case with this case number already exists in your organization', 400));
+        if (existingCase) {
+            return next(new ErrorResponse('A case with this case number already exists in your organization', 400));
+        }
     }
 
     // Do not auto-assign to creator.
@@ -115,7 +129,7 @@ exports.createCase = asyncHandler(async (req, res, next) => {
     }
 
     const newCase = await Case.create({
-        caseNumber: caseNumber.trim(),
+        ...(effectiveCaseNumber ? { caseNumber: effectiveCaseNumber } : {}),
         caseType: caseType.trim(),
         partyName: partyName.trim(),
         stage: stage ? stage.trim() : undefined,
@@ -545,7 +559,7 @@ exports.unarchiveCase = asyncHandler(async (req, res, next) => {
 exports.downloadCaseExcelTemplate = asyncHandler(async (req, res) => {
     const buffer = writeExcelToBuffer({
         sheetName: CASE_EXCEL_SHEET,
-        headers: CASE_EXCEL_HEADERS,
+        headers: CASE_EXCEL_HEADERS_V2,
         rows: []
     });
 
@@ -658,7 +672,7 @@ exports.exportCasesToExcel = asyncHandler(async (req, res) => {
 
     const buffer = writeExcelToBuffer({
         sheetName: CASE_EXCEL_SHEET,
-        headers: CASE_EXCEL_HEADERS,
+        headers: CASE_EXCEL_HEADERS_V1,
         rows
     });
 
@@ -681,17 +695,13 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Excel file is required (form-data field: file)', 400));
     }
 
-    const parsed = parseExcelFromBuffer(file.buffer, {
-        sheetName: CASE_EXCEL_SHEET,
-        expectedHeaders: CASE_EXCEL_HEADERS,
-        maxRows: 5000
-    });
+    const parsed = parseCaseExcel(file.buffer, { sheetName: CASE_EXCEL_SHEET, maxRows: 5000 });
     if (!parsed.ok) return next(new ErrorResponse(parsed.error, 400));
 
     const canAssign = req.userRole && canAssignModule(req.userRole, 'cases');
     const importerIsAssignee = !!canAssign;
 
-    // Group rows by caseNumber (trimmed)
+    // Group rows by caseNumber (trimmed) if present. If missing, each row becomes its own case.
     const groups = new Map();
     const errors = [];
 
@@ -700,11 +710,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
         const d = row.data;
 
         const caseNumber = toSafeString(d.caseNumber);
-        if (!caseNumber) {
-            errors.push({ row: r, errors: ['caseNumber is required'] });
-            continue;
-        }
-        const key = caseNumber.trim();
+        const key = caseNumber ? caseNumber.trim() : `__row_${r}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ rowNumber: r, data: d });
     }
@@ -730,9 +736,6 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
 
         if (!caseType) rowIssues.push('caseType is required');
         if (!partyName) rowIssues.push('partyName is required');
-        if (courtName && CASE_COURT_NAME_ENUM.length > 0 && !CASE_COURT_NAME_ENUM.includes(courtName)) {
-            rowIssues.push(`courtName must be one of: ${CASE_COURT_NAME_ENUM.join(', ')}`);
-        }
         if (courtPremises && CASE_COURT_PREMISES_ENUM.length > 0 && !CASE_COURT_PREMISES_ENUM.includes(courtPremises)) {
             rowIssues.push(`courtPremises must be one of: ${CASE_COURT_PREMISES_ENUM.join(', ')}`);
         }
@@ -748,13 +751,15 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
             rowIssues.push('Only users with case assignee permission can link/create clients during import');
         }
 
-        const existing = await Case.findOne({ organization: organizationId, caseNumber, deletedAt: null }).lean();
-        if (existing) {
-            rowIssues.push('A case with this caseNumber already exists');
+        if (caseNumber) {
+            const existing = await Case.findOne({ organization: organizationId, caseNumber, deletedAt: null }).lean();
+            if (existing) {
+                rowIssues.push('A case with this caseNumber already exists');
+            }
         }
 
         if (rowIssues.length > 0) {
-            errors.push({ row: first.rowNumber, caseNumber, errors: rowIssues });
+            errors.push({ row: first.rowNumber, ...(caseNumber ? { caseNumber } : {}), errors: rowIssues });
             skippedCases++;
             continue;
         }
@@ -776,7 +781,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
             if (clientId) {
                 const cl = await Client.findOne({ _id: clientId, organization: organizationId, deletedAt: null }).select('_id').lean();
                 if (!cl) {
-                    errors.push({ row: r, caseNumber, errors: [`clientId "${clientId}" not found in your organization`] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: [`clientId "${clientId}" not found in your organization`] });
                     continue;
                 }
                 resolvedClientId = cl._id.toString();
@@ -792,18 +797,18 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
                     : [];
 
                 if (byPhone.length > 1) {
-                    errors.push({ row: r, caseNumber, errors: [`clientPhone "${clientPhoneRaw}" matches multiple clients. Please fix duplicates or use clientId.`] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: [`clientPhone "${clientPhoneRaw}" matches multiple clients. Please fix duplicates or use clientId.`] });
                     continue;
                 }
                 if (byEmail.length > 1) {
-                    errors.push({ row: r, caseNumber, errors: [`clientEmail "${clientEmail}" matches multiple clients. Please fix duplicates or use clientId.`] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: [`clientEmail "${clientEmail}" matches multiple clients. Please fix duplicates or use clientId.`] });
                     continue;
                 }
 
                 const phoneId = byPhone[0]?._id?.toString();
                 const emailId = byEmail[0]?._id?.toString();
                 if (phoneId && emailId && phoneId !== emailId) {
-                    errors.push({ row: r, caseNumber, errors: ['clientPhone and clientEmail belong to different clients. Please correct or use clientId.'] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: ['clientPhone and clientEmail belong to different clients. Please correct or use clientId.'] });
                     continue;
                 }
 
@@ -834,7 +839,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
                 if (fees === undefined || Number.isNaN(fees)) clientIssues.push('clientFees is required to create client and must be a number');
 
                 if (clientIssues.length > 0) {
-                    errors.push({ row: r, caseNumber, errors: clientIssues });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: clientIssues });
                     continue;
                 }
 
@@ -846,17 +851,17 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
                     ? await Client.find({ organization: organizationId, deletedAt: null, email: clientEmail }).select('_id').lean()
                     : [];
                 if (byPhone.length > 1) {
-                    errors.push({ row: r, caseNumber, errors: [`clientPhone "${clientPhoneRaw}" matches multiple clients. Please fix duplicates or use clientId.`] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: [`clientPhone "${clientPhoneRaw}" matches multiple clients. Please fix duplicates or use clientId.`] });
                     continue;
                 }
                 if (byEmail.length > 1) {
-                    errors.push({ row: r, caseNumber, errors: [`clientEmail "${clientEmail}" matches multiple clients. Please fix duplicates or use clientId.`] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: [`clientEmail "${clientEmail}" matches multiple clients. Please fix duplicates or use clientId.`] });
                     continue;
                 }
                 const phoneId = byPhone[0]?._id?.toString();
                 const emailId = byEmail[0]?._id?.toString();
                 if (phoneId && emailId && phoneId !== emailId) {
-                    errors.push({ row: r, caseNumber, errors: ['clientPhone and clientEmail belong to different clients. Please correct or use clientId.'] });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: ['clientPhone and clientEmail belong to different clients. Please correct or use clientId.'] });
                     continue;
                 }
                 if (phoneId || emailId) {
@@ -885,7 +890,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
                     resolvedClientId = created._id.toString();
                     createdClients++;
                 } catch (e) {
-                    errors.push({ row: r, caseNumber, errors: formatMongooseErrorForUser(e) });
+                    errors.push({ row: r, ...(caseNumber ? { caseNumber } : {}), errors: formatMongooseErrorForUser(e) });
                     continue;
                 }
                 }
@@ -899,14 +904,14 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
 
         const effectiveClientCount = clientCount === undefined ? clientIds.length : (Number.isNaN(clientCount) ? NaN : clientCount);
         if (Number.isNaN(effectiveClientCount)) {
-            errors.push({ row: first.rowNumber, caseNumber, errors: ['clientCount must be a number'] });
+            errors.push({ row: first.rowNumber, ...(caseNumber ? { caseNumber } : {}), errors: ['clientCount must be a number'] });
             skippedCases++;
             continue;
         }
         if (clientIds.length > effectiveClientCount) {
             errors.push({
                 row: first.rowNumber,
-                caseNumber,
+                ...(caseNumber ? { caseNumber } : {}),
                 errors: [`Cannot assign more than ${effectiveClientCount} client(s). Found ${clientIds.length} client rows for this caseNumber.`]
             });
             skippedCases++;
@@ -915,7 +920,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
 
         try {
             await Case.create({
-                caseNumber,
+                ...(caseNumber ? { caseNumber } : {}),
                 caseType,
                 partyName,
                 stage,
@@ -930,7 +935,7 @@ exports.importCasesFromExcel = asyncHandler(async (req, res, next) => {
             });
             createdCases++;
         } catch (e) {
-            errors.push({ row: first.rowNumber, caseNumber, errors: formatMongooseErrorForUser(e) });
+            errors.push({ row: first.rowNumber, ...(caseNumber ? { caseNumber } : {}), errors: formatMongooseErrorForUser(e) });
             skippedCases++;
         }
     }
@@ -985,16 +990,12 @@ exports.previewCasesExcelImport = asyncHandler(async (req, res, next) => {
         return next(new ErrorResponse('Excel file is required (form-data field: file)', 400));
     }
 
-    const parsed = parseExcelFromBuffer(file.buffer, {
-        sheetName: CASE_EXCEL_SHEET,
-        expectedHeaders: CASE_EXCEL_HEADERS,
-        maxRows: 5000
-    });
+    const parsed = parseCaseExcel(file.buffer, { sheetName: CASE_EXCEL_SHEET, maxRows: 5000 });
     if (!parsed.ok) return next(new ErrorResponse(parsed.error, 400));
 
     const canAssign = req.userRole && canAssignModule(req.userRole, 'cases');
 
-    // Group rows by caseNumber (trimmed)
+    // Group rows by caseNumber (trimmed) if present. If missing, each row becomes its own case.
     const groups = new Map();
     const errors = [];
 
@@ -1003,11 +1004,7 @@ exports.previewCasesExcelImport = asyncHandler(async (req, res, next) => {
         const d = row.data;
 
         const caseNumber = toSafeString(d.caseNumber);
-        if (!caseNumber) {
-            errors.push({ row: r, errors: ['caseNumber is required'] });
-            continue;
-        }
-        const key = caseNumber.trim();
+        const key = caseNumber ? caseNumber.trim() : `__row_${r}`;
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ rowNumber: r, data: d });
     }
@@ -1029,9 +1026,6 @@ exports.previewCasesExcelImport = asyncHandler(async (req, res, next) => {
         const caseIssues = [];
         if (!caseType) caseIssues.push('caseType is required');
         if (!partyName) caseIssues.push('partyName is required');
-        if (courtName && CASE_COURT_NAME_ENUM.length > 0 && !CASE_COURT_NAME_ENUM.includes(courtName)) {
-            caseIssues.push(`courtName must be one of: ${CASE_COURT_NAME_ENUM.join(', ')}`);
-        }
         if (courtPremises && CASE_COURT_PREMISES_ENUM.length > 0 && !CASE_COURT_PREMISES_ENUM.includes(courtPremises)) {
             caseIssues.push(`courtPremises must be one of: ${CASE_COURT_PREMISES_ENUM.join(', ')}`);
         }
@@ -1047,9 +1041,11 @@ exports.previewCasesExcelImport = asyncHandler(async (req, res, next) => {
             caseIssues.push('Only users with case assignee permission can link/create clients during import');
         }
 
-        const existingCase = await Case.findOne({ organization: organizationId, caseNumber, deletedAt: null }).select('_id').lean();
-        if (existingCase) {
-            caseIssues.push('A case with this caseNumber already exists');
+        if (caseNumber) {
+            const existingCase = await Case.findOne({ organization: organizationId, caseNumber, deletedAt: null }).select('_id').lean();
+            if (existingCase) {
+                caseIssues.push('A case with this caseNumber already exists');
+            }
         }
 
         const clientPreviews = [];
@@ -1168,13 +1164,13 @@ exports.previewCasesExcelImport = asyncHandler(async (req, res, next) => {
         }
 
         const willCreateCase = caseIssues.length === 0 && clientPreviews.every((cp) => (cp.issues || []).length === 0);
-        if (caseIssues.length > 0) errors.push({ row: first.rowNumber, caseNumber, errors: caseIssues });
+        if (caseIssues.length > 0) errors.push({ row: first.rowNumber, ...(caseNumber ? { caseNumber } : {}), errors: caseIssues });
         for (const cp of clientPreviews) {
-            if (cp.issues && cp.issues.length > 0) errors.push({ row: cp.row, caseNumber, errors: cp.issues });
+            if (cp.issues && cp.issues.length > 0) errors.push({ row: cp.row, ...(caseNumber ? { caseNumber } : {}), errors: cp.issues });
         }
 
         preview.push({
-            caseNumber,
+            ...(caseNumber ? { caseNumber } : {}),
             willCreate: willCreateCase,
             issues: caseIssues,
             data: {

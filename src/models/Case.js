@@ -2,11 +2,10 @@
 // Case model for legal case management
 
 const mongoose = require('mongoose');
-const { generateCaseId } = require('../utils/idGenerator');
+const { generateCaseId, generateCaseNumber } = require('../utils/idGenerator');
 
 // Static enums - can be expanded later
 const COURT_PREMISES_ENUM = ['District Court', 'High Court', 'Supreme Court', 'Tribunal', 'Other'];
-const COURT_NAME_ENUM = ['District Court Delhi', 'High Court Delhi', 'Supreme Court', 'Consumer Forum', 'Labour Court', 'Family Court', 'Other'];
 
 const CaseSchema = new mongoose.Schema({
     _id: {
@@ -16,6 +15,7 @@ const CaseSchema = new mongoose.Schema({
     caseNumber: {
         type: String,
         required: [true, 'Case number is required'],
+        default: generateCaseNumber,
         trim: true,
         maxlength: [100, 'Case number cannot exceed 100 characters']
     },
@@ -38,7 +38,6 @@ const CaseSchema = new mongoose.Schema({
     },
     courtName: {
         type: String,
-        enum: COURT_NAME_ENUM,
         trim: true
     },
     courtPremises: {

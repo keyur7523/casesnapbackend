@@ -63,6 +63,16 @@ const generateCaseId = () => {
 };
 
 /**
+ * Generate a case number
+ * @returns {String} e.g. CS-<timestamp>-<random>
+ */
+const generateCaseNumber = () => {
+    const ts = Date.now().toString(36).toUpperCase();
+    const rand = crypto.randomBytes(3).toString('hex').toUpperCase();
+    return `CS-${ts}-${rand}`;
+};
+
+/**
  * Generate module ID
  * @returns {String} module_xxxxx
  */
@@ -98,6 +108,7 @@ module.exports = {
     generateEmployeeId,
     generateClientId,
     generateCaseId,
+    generateCaseNumber,
     generateModuleId,
     generateNotificationId,
     isValidCustomId,
